@@ -1,0 +1,33 @@
+TC_062:
+  actor: A1
+  expected:
+    status_code: 404
+    error_equals: "Couldn't find Ticket with 'id'=\"{ticket_id}\""
+TC_064:
+  actor: anonymous
+  target_state: closed
+  expected:
+    status_code: 403
+    error_equals: Authentication required
+TC_065:
+  actor: AD
+  expected:
+    status_code: 403
+    error_equals: Not authorized
+TC_066:
+  actor: C2
+  target_state: closed
+  expected:
+    status_code: 403
+    error_equals: Not authorized
+TC_067:
+  actor: AR
+  target_state: closed
+  expected:
+    status_code: 403
+    error_equals: Not authorized
+TC_068:
+  actor: A1
+  expected:
+    status_code: 422
+    error_equals: "Invalid value '{group_id}' for field 'group_id'!"

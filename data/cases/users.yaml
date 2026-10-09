@@ -1,0 +1,17 @@
+TC_137:
+  actor: AD
+  input: {firstname: Auto, lastname: Customer, active: true}
+  expected: {status_code: 201, role: Customer}
+TC_138:
+  actor: AD
+  input: {firstname: Auto, lastname: Customer, active: true}
+  duplicate: {firstname: Replaced}
+  expected: {status_class: 4, role: Customer}
+TC_139:
+  actor: AD
+  input: {firstname: Auto, lastname: Customer, active: true}
+  update: {firstname: Updated}
+  expected: {status_code: 200, role: Customer}
+TC_140:
+  actor: AD
+  expected: {status_code: 404}

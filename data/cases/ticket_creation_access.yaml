@@ -1,0 +1,30 @@
+# 真实 ID 由只读前置核查获取；不存凭据，不解释表达式。
+TC_030:
+  actor: A1
+  expected:
+    error_kind: customer
+    status_code: 422
+    error_prefix: "Invalid value for param 'customer_id': "
+TC_031:
+  actor: A1
+  expected:
+    error_kind: group
+TC_032:
+  actor: C1
+  title: 客户创建验证
+  article:
+    subject: 创建验证
+    body: 客户创建
+    type: web
+    sender: Customer
+    content_type: text/plain
+    internal: false
+  expected:
+    error_kind: customer_permission
+    status_code: 201
+TC_034:
+  actor: AD
+  expected:
+    error_kind: ticket_role
+    status_code: 403
+    error_equals: Token authorization failed.

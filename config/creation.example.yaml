@@ -1,0 +1,7 @@
+# M08 创建权限场景的非敏感逻辑映射，不填Token或密码。
+group2_name: AUTO_G2
+owner_login: testzammad.a12@example.invalid
+other_customer_login: testzammad.c2@example.invalid
+admin_login: testzammad.ad@example.invalid
+customer_token_env: ZAMMAD_C1_TOKEN
+admin_token_env: ZAMMAD_AD_TOKEN

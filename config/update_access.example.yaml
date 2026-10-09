@@ -1,0 +1,10 @@
+# M10 非敏感映射；凭据只从所列环境变量读取，历史 ID 不作为输入。
+admin_login: testzammad.ad@example.invalid
+admin_token_env: ZAMMAD_AD_TOKEN
+other_customer_login: testzammad.c2@example.invalid
+customer_token_env: ZAMMAD_C2_TOKEN
+reader_login: testzammad.ar@example.invalid
+reader_token_env: ZAMMAD_AR_TOKEN
+peer_login: testzammad.a2@example.invalid
+group2_name: AUTO_G2
+unassigned_login: '-'

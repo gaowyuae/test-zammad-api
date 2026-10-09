@@ -1,0 +1,17 @@
+TC_141:
+  actor: U
+  role: Customer
+  token_role_name: AUTO_M08_C1_TOKEN_TEMP
+  input: {firstname: 权限隔离, lastname: 临时客户, active: true}
+TC_142:
+  actor: A1
+  role: Customer
+  input: {firstname: 角色越权, lastname: 临时客户, active: true}
+TC_143:
+  actor: AD
+  role: Agent
+  input: {firstname: 精确组授权, lastname: 临时客服, active: true}
+TC_144:
+  actor: AD
+  role: Agent
+  input: {firstname: 撤销组授权, lastname: 临时客服, active: true}

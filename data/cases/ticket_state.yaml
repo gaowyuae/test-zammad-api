@@ -1,0 +1,13 @@
+# 原 Excel TC_069～071；状态、优先级和未来时刻均在运行时取得。
+TC_069:
+  actor: A1
+  expected:
+    status_code: 422
+TC_070:
+  actor: A1
+  expected:
+    status_code: 200
+TC_071:
+  actor: A1
+  expected:
+    status_code: 200

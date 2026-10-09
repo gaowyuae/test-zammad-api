@@ -1,0 +1,49 @@
+version: search-v1
+priority: 2 normal
+title_keyword: AUTOMATION_SEARCH_B05
+tickets:
+  - code: B01
+    customer: BC1
+    owner: BA1
+    state: closed
+    articles: [false]
+  - code: B02
+    customer: BC1
+    owner: BA2
+    state: closed
+    articles: [false, false, true, true, true]
+  - code: B03
+    customer: BC2
+    owner: BA1
+    state: closed
+    articles: [false]
+  - code: B04
+    customer: BC2
+    owner: BA2
+    state: closed
+    articles: [false]
+  - code: B05
+    customer: BC1
+    owner: BA1
+    state: open
+    articles: [false]
+  - code: B06
+    customer: BC1
+    owner: BA1
+    state: new
+    articles: [false]
+  - code: B07
+    customer: BC1
+    owner: BA1
+    state: new
+    articles: [false]
+  - code: B08
+    customer: BC2
+    owner: BA2
+    state: open
+    articles: [false]
+  - code: B09
+    customer: BC1
+    owner: BA2
+    state: open
+    articles: [false]

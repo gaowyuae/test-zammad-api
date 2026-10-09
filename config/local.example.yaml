@@ -1,0 +1,6 @@
+# test-Zammad 项目非敏感配置示例；本文件不会触发网络连接。
+# 后续实际环境配置复制为 local.yaml，凭据只能通过环境变量提供。
+env_id: zammad-local
+base_url: http://localhost:18080
+connect_timeout: 5
+read_timeout: 30

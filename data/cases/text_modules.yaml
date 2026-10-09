@@ -1,0 +1,22 @@
+TC_171:
+  actor: AD
+  name_template: "{run_id}_{case_id}_text_module"
+  input: {keywords: qahello, content: 您好，已受理您的问题。, active: true, group_ids: []}
+  expected: {status_code: 200}
+TC_172:
+  actor: AD
+  name_template: "{run_id}_{case_id}_text_module"
+  input: {content: 有效正文, active: true}
+  note_length: 250
+  expected: {status_code: 201}
+TC_173:
+  actor: AD
+  name_template: "{run_id}_{case_id}_text_module"
+  input: {content: 有效正文, active: true}
+  note_length: 251
+  expected: {status_class: 4, error_kind: note_length}
+TC_174:
+  actor: C1
+  name_template: "{run_id}_{case_id}_text_module"
+  input: {keywords: qahello, content: 您好，已受理您的问题。, active: true, group_ids: []}
+  expected: {status_class: 4, error_kind: permission}

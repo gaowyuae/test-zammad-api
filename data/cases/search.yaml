@@ -1,0 +1,47 @@
+TC_109:
+  actor: BA1
+  query_kind: number
+  target: B05
+  expected: {status_code: 200, codes: [B05]}
+TC_110:
+  actor: BA1
+  query_kind: closed
+  expected: {status_code: 200, codes: [B01, B02, B03, B04]}
+TC_111:
+  actor: BC1
+  query_kind: number
+  target: B08
+  expected: {status_code: 200, codes: []}
+TC_112:
+  actor: BA1
+  query_kind: missing_number
+  expected: {status_code: 200, codes: []}
+TC_113:
+  actor: BA1
+  query_kind: customer
+  input: {per_page: 2, page: 1, sort_by: id, order_by: asc}
+  expected: {status_code: 200, codes: [B01, B02, B05, B06, B07, B09]}
+TC_114:
+  actor: BA1
+  query_kind: owner_new
+  expected: {status_code: 200, codes: [B06, B07]}
+TC_115:
+  actor: Ø
+  query_kind: number
+  target: B05
+  expected: {status_class: 4, error_kind: authentication}
+TC_116:
+  actor: BA1
+  query_kind: title
+  target: B05
+  expected: {status_code: 200, codes: [B05]}
+TC_117:
+  actor: BA1
+  query_kind: number
+  target: B05
+  repetitions: 3
+  expected: {status_code: 200, codes: [B05]}
+TC_118:
+  actor: A1
+  query_kind: missing_id
+  expected: {status_code: 404, error_kind: missing}

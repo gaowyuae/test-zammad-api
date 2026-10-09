@@ -1,0 +1,10 @@
+# 复制为已忽略的 db.local.yaml；账号仅授予必要列 SELECT 权限。
+# 不填写实际密码；运行前在对应环境变量中提供密码。
+host: localhost
+port: 15432
+dbname: zammad_production
+user: test_zammad_ro
+password_env: ZAMMAD_DB_PASSWORD
+connect_timeout: 5
+statement_timeout_ms: 10000
+lock_timeout_ms: 3000

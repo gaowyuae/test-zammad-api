@@ -1,0 +1,34 @@
+# 本项目独占的解释器、虚拟环境和下载缓存
+.runtime/
+.venv/
+.downloads/
+.tmp/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 私有配置、凭据与运行产物
+.env
+.env.*
+config/local.yaml
+config/run.local.yaml
+config/db.local.yaml
+config/creation.local.yaml
+config/assignment.local.yaml
+config/update_access.local.yaml
+config/*.private.yaml
+artifacts/
+allure-results/
+allure-report/
+
+# 编辑器本地配置
+.idea/
+.vscode/
+config/search.local.yaml
+
+# GitHub 仅保留业务源码、配置示例和指定的原始用例。
+/tests/unit/
+/qa-output/
+/docs/*
+!/docs/Zammad_工单创建测试用例.xlsx

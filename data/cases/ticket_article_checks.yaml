@@ -1,0 +1,64 @@
+TC_092:
+  actor: A1
+  article:
+    type: note
+    sender: Agent
+    internal: true
+  expected:
+    status_code: 422
+    error: "Need at least an 'article body' field."
+TC_093:
+  actor: A1
+  article:
+    type: note
+    sender: Agent
+    content_type: text/plain
+    body: 消息验证
+    internal: false
+    attachments:
+      - filename: qa.txt
+        data: UUE=
+        mime-type: text/plain
+  expected:
+    status_code: 201
+    filename: qa.txt
+    size: 2
+TC_094:
+  actor: C2
+  article:
+    type: note
+    sender: Agent
+    content_type: text/plain
+    body: 消息验证
+    internal: false
+    attachments:
+      - filename: qa.txt
+        data: UUE=
+        mime-type: text/plain
+  expected:
+    status_code: 403
+    error: Not authorized
+TC_095:
+  actor: A1
+  article:
+    type: note
+    sender: Agent
+    content_type: text/plain
+    body: 原始正文
+    internal: true
+  replacement: 替换正文
+  expected:
+    status_code: 200
+    body_unchanged: true
+TC_096:
+  actor: A1
+  author: A2
+  article:
+    type: note
+    sender: Agent
+    content_type: text/plain
+    body: 他人备注
+    internal: true
+  expected:
+    status_code: 403
+    error: Not authorized (you can only delete your own notes)!

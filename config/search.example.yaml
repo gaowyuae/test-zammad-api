@@ -1,0 +1,10 @@
+# M22 专用长期身份；实际 Token 仅由环境变量提供。
+group_name: AUTO_GB
+ba1_login: testzammad.ba1@example.invalid
+ba2_login: testzammad.ba2@example.invalid
+bc1_login: testzammad.bc1@example.invalid
+bc2_login: testzammad.bc2@example.invalid
+ba1_token_env: ZAMMAD_BA1_TOKEN
+ba2_token_env: ZAMMAD_BA2_TOKEN
+bc1_token_env: ZAMMAD_BC1_TOKEN
+bc2_token_env: ZAMMAD_BC2_TOKEN

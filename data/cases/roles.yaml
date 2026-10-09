@@ -1,0 +1,22 @@
+TC_145:
+  actor: AD
+  name_template: "{run_id}_{case_id}_role"
+  input: {active: true, default_at_signup: false}
+  permission_names: [ticket.agent, user_preferences]
+  expected: {status_code: 201}
+TC_146:
+  actor: AD
+  input: {name: '', active: true, default_at_signup: false}
+  permission_names: [ticket.agent]
+  expected: {status_class: 4, error_kind: required}
+TC_147:
+  actor: AD
+  input: {name: agent, default_at_signup: false}
+  permission_names: [ticket.agent]
+  expected: {status_class: 4, error_kind: duplicate}
+TC_148:
+  actor: C1
+  name_template: "{run_id}_{case_id}_role"
+  input: {default_at_signup: false}
+  permission_names: [admin]
+  expected: {status_class: 4, error_kind: permission}

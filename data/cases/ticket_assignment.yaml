@@ -1,0 +1,12 @@
+TC_059:
+  actor: A1
+  expected: {status_code: 200, owner: A2}
+TC_060:
+  actor: A1
+  expected: {status_code: 200, owner: unassigned}
+TC_061:
+  actor: A12
+  expected: {status_code: 200, owner: A12}
+TC_063:
+  actor: A1
+  expected: {status_code: 200, owner: unassigned}

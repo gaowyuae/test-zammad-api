@@ -1,0 +1,20 @@
+TC_159:
+  actor: AD
+  name_template: "{run_id}_{case_id}_template"
+  input: {active: true, options: {ticket.title: {value: 接口模板标题}}}
+  expected: {status_code: 201}
+TC_160:
+  actor: AD
+  input: {name: ' ', active: true, options: {ticket.title: {value: 标题}}}
+  expected: {status_class: 4, error_kind: name_required}
+TC_161:
+  actor: AD
+  name_template: "{run_id}_{case_id}_template"
+  input: {active: true, options: {ticket.title: {value: 模板测试标题}}}
+  update: {options: {ticket.title: {value: 接口修改后的标题}}}
+  expected: {status_code: 200}
+TC_162:
+  actor: A1
+  name_template: "{run_id}_{case_id}_template"
+  input: {active: true, options: {ticket.title: {value: 模板测试标题}}}
+  expected: {status_class: 4, error_kind: permission}

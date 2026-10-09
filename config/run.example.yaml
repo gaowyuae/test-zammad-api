@@ -1,0 +1,9 @@
+# 非敏感运行配置。复制为 run.local.yaml 后填实际登录名，不能写 Token。
+# 所有本地／Jenkins 工作区必须使用同一环境代号和这个共享目录。
+state_dir: F:/Python/test-Zammad-state
+agent_login: testzammad.a1@example.invalid
+maintenance_login: testzammad.maintenance@example.invalid
+customer_login: testzammad.c1@example.invalid
+group_name: AUTO_G1
+agent_token_env: ZAMMAD_A1_TOKEN
+maintenance_token_env: ZAMMAD_M_TOKEN

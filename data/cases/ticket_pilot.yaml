@@ -1,0 +1,35 @@
+# 原 Excel TC_025、033、058、072；历史 ID 以当前接口字典映射。
+TC_025:
+  title: 匿名创建验证
+  state_name: new
+  expected:
+    statuses: [401, 403]
+    error_contains: Authentication required
+TC_033:
+  title: 非法文章类型验证
+  state_name: new
+  invalid_type: __QA_NO_SUCH_TYPE__
+  expected:
+    status_code: 422
+    error_contains: "No lookup value found for 'type':"
+TC_058:
+  title: 部分字段更新验证
+  state_name: new
+  target_state: open
+  expected:
+    status_code: 200
+TC_072:
+  title: 更新与文章回滚验证
+  state_name: open
+  target_state: closed
+  invalid_type: __QA_NO_SUCH_TYPE__
+  update_article:
+    type: __QA_NO_SUCH_TYPE__
+    sender: Agent
+    subject: 更新回滚
+    body: 回滚验证
+    content_type: text/plain
+    internal: true
+  expected:
+    status_code: 422
+    error_contains: "No lookup value found for 'type':"

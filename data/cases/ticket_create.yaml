@@ -1,0 +1,15 @@
+# 来源：原 Excel 测试用例!A24:K24；历史 ID 通过前置 API 映射。
+case_id: TC_023
+title: 客服接口创建验证
+state_name: new
+priority_name: 2 normal
+article:
+  subject: 创建验证
+  body: 创建验证
+  type: phone
+  sender: Customer
+  content_type: text/plain
+  internal: false
+expected:
+  status_code: 201
+  article_count: 1

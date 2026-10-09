@@ -1,0 +1,47 @@
+# Excel TC_088、091 重复字段按已确认转换规则归一，原表不修改。
+TC_087:
+  actor: A1
+  article:
+    type: note
+    sender: Agent
+    content_type: text/plain
+    body: 消息验证
+    internal: false
+  expected:
+    status_code: 201
+    sender: Agent
+    internal: false
+TC_088:
+  actor: C1
+  article:
+    type: web
+    sender: Agent
+    content_type: text/plain
+    body: 消息验证
+    internal: true
+  expected:
+    status_code: 201
+    sender: Customer
+    internal: false
+TC_089:
+  actor: C1
+  expected:
+    status_code: 200
+    public_count: 2
+    internal_count: 3
+TC_090:
+  actor: C1
+  expected:
+    status_code: 403
+    error: Not authorized
+TC_091:
+  actor: C2
+  article:
+    type: web
+    sender: Customer
+    content_type: text/plain
+    body: 消息验证
+    internal: false
+  expected:
+    status_code: 403
+    error: Not authorized

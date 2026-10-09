@@ -1,0 +1,37 @@
+TC_187:
+  actor: AD
+  name_template: "{run_id}_{case_id}_macro"
+  input:
+    active: true
+    ux_flow_next_up: none
+    group_ids: [G1]
+    perform: {ticket.priority_id: {value: high}}
+  expected: {status_code: 201}
+TC_188:
+  actor: AD
+  name_template: "{run_id}_{case_id}_macro"
+  input:
+    active: true
+    ux_flow_next_up: none
+    group_ids: [G1]
+    perform: {ticket.priority_id: {value: high}, ticket.state_id: {value: open}}
+  update:
+    perform: {ticket.priority_id: {value: low}, ticket.state_id: {value: open}}
+  expected: {status_code: 200}
+TC_189:
+  actor: A1
+  name_template: "{run_id}_{case_id}_macro"
+  input:
+    active: true
+    ux_flow_next_up: none
+    perform: {ticket.state_id: {value: open}}
+  expected: {status_class: 4, error_kind: permission}
+TC_190:
+  actor: A12
+  name_template: "{run_id}_{case_id}_macro"
+  input:
+    active: true
+    ux_flow_next_up: none
+    group_ids: [G1]
+    perform: {ticket.priority_id: {value: high}}
+  expected: {status_code: 422, error: Macro group restrictions do not cover all tickets}

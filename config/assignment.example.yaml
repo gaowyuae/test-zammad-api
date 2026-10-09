@@ -1,0 +1,10 @@
+# M09 非敏感逻辑映射；复制为 assignment.local.yaml，不填写凭据或历史ID。
+peer_login: testzammad.a2@example.invalid
+transfer_login: testzammad.a12@example.invalid
+group2_name: AUTO_G2
+# 当前版本系统未分派用户：inactive、无角色；不能映射到普通账号。
+unassigned_login: '-'
+transfer_token_env: ZAMMAD_A12_TOKEN
+
+# M13 A2实际创建他人备注；不填Token明文。
+peer_token_env: ZAMMAD_A2_TOKEN
