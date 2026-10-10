@@ -17,6 +17,9 @@ pipeline {
         string(name: 'CONFIG_ROOT', defaultValue: 'F:/Python/test-Zammad/config', description: '专用 Windows agent 可读的七份非敏感本机配置目录；共享状态仍由 run.local.yaml 指定。')
     }
     environment {
+        // 首次非参数化构建也从 params（含声明默认值）显式传给子进程。
+        SUITE = "${params.SUITE ?: 'functional'}"
+        CONFIG_ROOT = "${params.CONFIG_ROOT ?: 'F:/Python/test-Zammad/config'}"
         BASE_PYTHON = 'F:/Python/test-Zammad/.runtime/Python-3.13.13/python.exe'
         PYTHONUTF8 = '1'
         PYTEST_ADDOPTS = ''
