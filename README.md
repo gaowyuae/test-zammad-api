@@ -8,7 +8,7 @@
 
 M25执行摘要（本地资料，不随仓库上传） · 73条编号结果（本地资料，不随仓库上传） · TC_037差异（本地资料，不随仓库上传）。完整原始结果位于本机`artifacts/m25-full-20261006-193520/`，由Git忽略，未上传或公开发布。
 
-M23/M24新增搜索10条先定向全部通过（JUnit118.421秒），随后纳入上述同版本完整回归，不能把两轮相加为83条覆盖。672项离线检查通过，Ruff及本轮文件格式检查通过；unit不计业务用例。**M23/M24/M25待用户评审，内部通过不代表用户已验收。** Jenkins继续延期，P4性能／P5并发10条候选未实现。
+M23/M24新增搜索10条先定向全部通过（JUnit118.421秒），随后纳入上述同版本完整回归，不能把两轮相加为83条覆盖。672项离线检查通过，Ruff及本轮文件格式检查通过；unit不计业务用例。**M23/M24/M25待用户评审，内部通过不代表用户已验收。** 2026-10-10开始补齐 Jenkins 配置，尚未完成真实 CI 构建验收；P4性能／P5并发10条候选未实现。
 
 历史定向结果和授权见开发进度（本地资料，不随仓库上传）。历史39条完整回归见M14摘要（本地资料，不随仓库上传），P2与基线见M21/M22摘要（本地资料，不随仓库上传）；这些结果各自保留版本与范围，不用于拼接本轮通过数量。
 
@@ -243,9 +243,45 @@ allure open "$runDir/allure-report"
 
 ## 交付边界
 
-当前是单实例、单进程的接口自动化作品，P2已实现24条；P3已实现10条搜索用例，P4～P5尚未实施，未建设通用企业测试平台。`Jenkinsfile` 是早期P0配置模板，只有当时的配置／凭据接入，**不代表当前73条CI已接入**。Jenkins实际接入按用户安排延期，冻结同一提交的本地一轮＋CI两轮验收未完成。
+当前是单实例、单进程的接口自动化作品，P2已实现24条；P3已实现10条搜索用例，P4～P5尚未实施，未建设通用企业测试平台。`Jenkinsfile` 已补齐73条功能范围的配置及凭据绑定，**配置完成不代表真实 CI 验收通过**。冻结同一提交的本地一轮＋CI两轮试点验收仍未完成。
 
 本仓库上传项目源码、配置示例及原始测试用例Excel；开发进度、实施方案、历史报告和执行证据不随仓库上传。文中历史结果对应当时的源码指纹，不代表当前Git提交已经重新执行验证。后续CI需独立Windows工作区和venv、七份配置、十二枚Token与只读DB凭据、共享锁及真实报告验证。
+
+## Jenkins 手动运行
+
+任务使用 Pipeline script from SCM，Git 分支为 `*/test`，脚本路径为 `Jenkinsfile`。专用 Windows 节点标签为 `test-zammad-windows`，执行器数为1。节点须已在线，运行账号能够读取配置、使用 Git，并读写共享状态目录。本地与 Jenkins 不能同时操作被测实例。
+
+全局工具名称：JDK `test-zammad-jdk21`、Allure 2 `test-zammad-allure`（CLI 2.38.1）。本项目独立 Python 3.13.13 位于 `F:/Python/test-Zammad/.runtime/Python-3.13.13/python.exe`；流水线在自己的检出工作区创建 `.venv`，按 `requirements.txt` 安装锁定版本，不复用开发目录的虚拟环境。
+
+所有凭据类型均为 **Secret text**，实际值只保存在 Jenkins Credentials：
+
+| Jenkins ID | 注入变量 | 用途 |
+|---|---|---|
+| `test-zammad-a1-token` | `ZAMMAD_A1_TOKEN` | 普通客服 |
+| `test-zammad-m-token` | `ZAMMAD_M_TOKEN` | 维护管理员 |
+| `test-zammad-a2-token` | `ZAMMAD_A2_TOKEN` | 第二客服与备注作者 |
+| `test-zammad-a12-token` | `ZAMMAD_A12_TOKEN` | 双组客服 |
+| `test-zammad-ar-token` | `ZAMMAD_AR_TOKEN` | 只读客服 |
+| `test-zammad-ad-token` | `ZAMMAD_AD_TOKEN` | 纯管理员 |
+| `test-zammad-c1-token` | `ZAMMAD_C1_TOKEN` | 客户1 |
+| `test-zammad-c2-token` | `ZAMMAD_C2_TOKEN` | 客户2 |
+| `test-zammad-ba1-token` | `ZAMMAD_BA1_TOKEN` | 基线客服1 |
+| `test-zammad-ba2-token` | `ZAMMAD_BA2_TOKEN` | 基线客服2 |
+| `test-zammad-bc1-token` | `ZAMMAD_BC1_TOKEN` | 基线客户1 |
+| `test-zammad-bc2-token` | `ZAMMAD_BC2_TOKEN` | 基线客户2 |
+| `test-zammad-db-password` | `ZAMMAD_DB_PASSWORD` | `test_zammad_ro` 只读数据库密码 |
+
+`CONFIG_ROOT` 默认 `F:/Python/test-Zammad/config`。`pilot` 使用 `local.yaml`、`run.local.yaml`、`db.local.yaml`；`functional` 还需要 `creation.local.yaml`、`assignment.local.yaml`、`update_access.local.yaml`、`search.local.yaml`。这些文件仅保存在执行主机，不上传 Git。`run.local.yaml` 的 `state_dir` 必须与本地运行指向同一目录，保留残留登记、角色保留记录和 `search-baseline.json`；流水线不会自动初始化或重建搜索基线。
+
+操作顺序：
+
+1. **首次构建：** 保持 `RUN_TESTS=false`，只检出源码、检查配置文件是否存在、检查工具并安装依赖；不绑定测试凭据、不请求业务接口，也不产生业务报告。构建成功只表示这部分准备成功，不代表凭据、数据库或业务验证通过。
+2. **五条试点：** 在“Build with Parameters／参数化构建”中勾选 `RUN_TESTS`，选择 `SUITE=pilot`，核对 `CONFIG_ROOT` 后启动。只注入 A1、M、数据库三项凭据，执行 TC_023、025、033、058、072。
+3. **完整功能回归：** 试点评审通过后，勾选 `RUN_TESTS` 并选择 `SUITE=functional`，注入全部13项凭据，执行73条。默认用例组仍为 `functional`，但未勾选开关时不运行任何业务用例。
+
+两种业务选择都只调用一次 `python -m tools.run`，共享锁覆盖准备、执行、取证和清理。总超时45分钟，不自动重跑；超时、中断或清理失败后先按恢复说明处理残留，不直接重复构建。普通断言失败保留非零退出码，报告发布不能把构建变绿。TC_037历史产品差异可能使完整回归失败，应按本轮实际证据判断。
+
+业务运行结果在 `artifacts/ci-<BUILD_NUMBER>/`，Jenkins 展示 JUnit 和 Allure，并归档必要文件。报告发布失败、缺少测试结果不能算业务运行成功。构建保留30天且最多50次；共享状态不随构建删除。此轮仅更新流水线配置，未触发构建或执行上述业务验证。
 
 
 ## M16 用户场景复现
