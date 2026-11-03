@@ -165,18 +165,26 @@ def _json_object(pairs: list[tuple[str, object]]) -> dict:
 
 
 def _valid_resource(resource: object, run_id: str) -> bool:
-    """校验固定工单清单格式和状态所需的实际 ID。"""
-    if isinstance(resource, dict) and resource.get("type") == "search_baseline":
+    """先确认历史资源为对象，再按资源类型校验持久化契约。"""
+    if not isinstance(resource, dict):
+        return False
+    kind = resource.get("type")
+    if kind == "search_baseline":
         return _valid_baseline(resource, run_id)
-    if isinstance(resource, dict) and resource.get("type") == "user":
+    if kind == "user":
         return _valid_user(resource, run_id)
-    if isinstance(resource, dict) and resource.get("type") == "token":
+    if kind == "token":
         return _valid_token(resource, run_id)
-    if isinstance(resource, dict) and resource.get("type") == "role":
+    if kind == "role":
         return _valid_role(resource, run_id)
-    if isinstance(resource, dict) and resource.get("type") in CONFIG_CASES:
+    if kind in CONFIG_CASES:
         return _valid_config_resource(resource, run_id)
-    if not isinstance(resource, dict) or resource.keys() != {
+    return _valid_ticket(resource, run_id)
+
+
+def _valid_ticket(resource: dict, run_id: str) -> bool:
+    """校验历史工单清单格式、业务范围及状态所需的实际 ID。"""
+    if resource.keys() != {
         "type",
         "case_id",
         "marker",
@@ -494,13 +502,13 @@ class EnvironmentRun:
     ) -> bool:
         """落盘最终清理状态并释放锁，同时保留业务和关闭失败。"""
         errors = []
-        self._record["status"] = (
-            "clean" if all(item["state"] in FINISHED for item in self.resources) else "attention"
-        )
-        if self._record["status"] == "clean" and any(
-            item["state"] == "retained" for item in self.resources
-        ):
+        resources = self._record["resources"]
+        if any(item["state"] not in FINISHED for item in resources):
+            self._record["status"] = "attention"
+        elif any(item["state"] == "retained" for item in resources):
             self._record["status"] = "clean_with_retained"
+        else:
+            self._record["status"] = "clean"
         try:
             self._save()
         except RuntimeError as error:
@@ -530,7 +538,7 @@ class EnvironmentRun:
             raise RuntimeError("运行上下文未持有环境锁") from None
         if case_id not in SUPPORTED_CASES or not _safe_marker(marker, self.run_id):
             raise ValueError("用例或本轮资源标记无效") from None
-        if any(item["marker"] == marker for item in self.resources):
+        if any(item["marker"] == marker for item in self._record["resources"]):
             raise ValueError("本轮资源标记重复") from None
         key = len(self._record["resources"])
         self._record["resources"].append(
@@ -627,7 +635,7 @@ class EnvironmentRun:
             raise RuntimeError("运行上下文未持有环境锁") from None
         if not _valid_user(resource, self.run_id):
             raise ValueError("用户资源定位信息无效") from None
-        if any(item["marker"] == marker for item in self.resources):
+        if any(item["marker"] == marker for item in self._record["resources"]):
             raise ValueError("本轮资源标记重复") from None
         key = len(self._record["resources"])
         self._record["resources"].append(resource)
@@ -691,7 +699,7 @@ class EnvironmentRun:
         )
         if not self._active or not _valid_baseline(resource, self.run_id):
             raise ValueError("基线创建意图或运行上下文无效") from None
-        if any(row["marker"] == marker for row in self.resources):
+        if any(row["marker"] == marker for row in self._record["resources"]):
             raise ValueError("基线标记重复") from None
         key = len(self._record["resources"])
         self._record["resources"].append(resource)
@@ -753,7 +761,7 @@ class EnvironmentRun:
         if not self._active:
             raise RuntimeError("运行上下文未持有环境锁") from None
         if not _valid_config_resource(resource, self.run_id) or any(
-            item["marker"] == marker for item in self.resources
+            item["marker"] == marker for item in self._record["resources"]
         ):
             raise ValueError("配置对象类型、编号或本轮定位无效") from None
         key = len(self._record["resources"])
@@ -802,7 +810,7 @@ class EnvironmentRun:
         if not self._active:
             raise RuntimeError("运行上下文未持有环境锁") from None
         if not _valid_role(resource, self.run_id) or any(
-            item["marker"] == marker for item in self.resources
+            item["marker"] == marker for item in self._record["resources"]
         ):
             raise ValueError("角色资源定位信息无效或重复") from None
         key = len(self._record["resources"])
@@ -857,7 +865,7 @@ class EnvironmentRun:
         if not self._active:
             raise RuntimeError("运行上下文未持有环境锁") from None
         if not _valid_token(resource, self.run_id) or any(
-            item["marker"] == marker for item in self.resources
+            item["marker"] == marker for item in self._record["resources"]
         ):
             raise ValueError("Token资源定位信息无效或重复") from None
         key = len(self._record["resources"])

@@ -1,7 +1,7 @@
 """更新权限场景的非敏感身份配置。"""
 
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -28,10 +28,7 @@ def load_update_access_config(path: Path) -> UpdateAccessConfig:
     """严格校验名称与凭据环境变量名，不读取或回显凭据。"""
     try:
         values = yaml.load(path.read_text(encoding="utf-8-sig"), Loader=_ConfigLoader)
-        if not isinstance(values, dict) or set(values) != {
-            field.name for field in fields(UpdateAccessConfig)
-        }:
-            raise ValueError
+        config = UpdateAccessConfig(**values)
         if any(
             not isinstance(value, str)
             or not value.strip()
@@ -48,6 +45,8 @@ def load_update_access_config(path: Path) -> UpdateAccessConfig:
             or len({value.casefold() for value in envs}) != 3
         ):
             raise ValueError
-        return UpdateAccessConfig(**values)
+        return config
+    except ConfigError:
+        raise
     except (OSError, UnicodeError, ValueError, TypeError, RecursionError, yaml.YAMLError):
         raise ConfigError("更新权限配置必须包含九个有效且非敏感的约定字段") from None
