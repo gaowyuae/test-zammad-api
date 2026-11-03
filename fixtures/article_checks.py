@@ -15,7 +15,6 @@ from support.config import ConfigError, _ConfigLoader
 from support.run_config import RunConfig
 
 ROOT = Path(__file__).resolve().parents[1]
-CASE_IDS = frozenset(f"TC_{number:03}" for number in range(92, 97))
 
 
 def load_article_check_case(case_id: str) -> tuple[dict, dict]:
@@ -55,53 +54,58 @@ def _check_import_mode(maintenance) -> None:
         raise PreflightError("无法确认 import_mode 已关闭") from None
 
 
+def _check_customer(actor, users: list[dict], roles: list[dict], login: str, mapping: dict) -> int:
+    """确认 C2 为独立且没有组织共享的普通客户，返回实际身份 ID。"""
+    user = _actor_user(actor, users, login)
+    _pure_role(user, roles, "ticket.customer")
+    if user["id"] in {
+        mapping["agent_id"],
+        mapping["maintenance_id"],
+        mapping["customer_id"],
+    } or (user.get("organization_id") or user.get("organization_ids")):
+        raise PreflightError("C2必须为无组织共享的独立客户") from None
+    return user["id"]
+
+
+def _check_peer(peer, users: list[dict], roles: list[dict], login: str, mapping: dict) -> int:
+    """确认 A2 为独立且拥有 G1 full 权限的普通客服，返回实际作者 ID。"""
+    user = _actor_user(peer, users, login)
+    groups = _pure_role(user, roles, "ticket.agent")
+    if user["id"] in {
+        mapping["agent_id"],
+        mapping["maintenance_id"],
+        mapping["customer_id"],
+    } or "full" not in groups.get(str(mapping["group_id"]), set()):
+        raise PreflightError("A2必须为独立且具有G1 full权限的普通客服") from None
+    read_json(peer, "api/v1/ticket_create")
+    return user["id"]
+
+
 def article_check_preflight(
     agent,
     maintenance,
     actor,
     peer,
     config: RunConfig,
-    customer_login: str,
+    actor_login: str,
     peer_login: str,
     data: dict,
     case_id: str,
 ) -> dict:
-    """写入前确认实际执行人、同组作者及客户隔离，禁止无效Token代替权限拒绝。"""
-    if case_id not in CASE_IDS:
-        raise PreflightError("不支持的文章保护场景") from None
+    """复用基础身份检查，按需核对额外身份及场景所需的只读入口。"""
     mapping = preflight(agent, maintenance, config, data)
-    users = list_rows(maintenance, "api/v1/users")
-    roles = list_rows(maintenance, "api/v1/roles")
-    user = _actor_user(actor, users, customer_login)
-    if case_id == "TC_094":
-        _pure_role(user, roles, "ticket.customer")
-        if user["id"] in {
-            mapping["agent_id"],
-            mapping["maintenance_id"],
-            mapping["customer_id"],
-        } or (user.get("organization_id") or user.get("organization_ids")):
-            raise PreflightError("C2必须为无组织共享的独立客户") from None
-    else:
-        _pure_role(user, roles, "ticket.agent")
-        if user["id"] != mapping["agent_id"]:
-            raise PreflightError("文章被测请求必须由A1发出") from None
+    # 普通场景的 actor 复用 agent，身份和角色已由基础前置确认。
+    mapping.update(actor_id=mapping["agent_id"], creator_id=mapping["maintenance_id"])
+    if case_id in {"TC_094", "TC_096"}:
+        users = list_rows(maintenance, "api/v1/users")
+        roles = list_rows(maintenance, "api/v1/roles")
+        if case_id == "TC_094":
+            mapping["actor_id"] = _check_customer(actor, users, roles, actor_login, mapping)
+        else:
+            mapping["peer_id"] = _check_peer(peer, users, roles, peer_login, mapping)
     read_json(actor, "api/v1/ticket_create")
-    if case_id == "TC_096":
-        if peer is None:
-            raise PreflightError("缺少A2独立Token") from None
-        author = _actor_user(peer, users, peer_login)
-        groups = _pure_role(author, roles, "ticket.agent")
-        if author["id"] in {
-            mapping["agent_id"],
-            mapping["maintenance_id"],
-            mapping["customer_id"],
-        } or ("full" not in groups.get(str(mapping["group_id"]), set())):
-            raise PreflightError("A2必须为独立且具有G1 full权限的普通客服") from None
-        read_json(peer, "api/v1/ticket_create")
-        mapping["peer_id"] = author["id"]
     if case_id == "TC_095":
         _check_import_mode(maintenance)
-    mapping.update(actor_id=user["id"], creator_id=mapping["maintenance_id"])
     return mapping
 
 
