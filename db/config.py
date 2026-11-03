@@ -40,9 +40,11 @@ class DbConfig:
 
 
 def load_db_config(path: Path) -> DbConfig:
-    """读取 YAML，字段及取值由 DbConfig 检查。"""
+    """读取数据库配置，由配置类检查字段并统一转换加载异常。"""
     try:
         values = yaml.load(path.read_text(encoding="utf-8-sig"), Loader=_ConfigLoader)
-    except (OSError, UnicodeError, yaml.YAMLError):
+        return DbConfig(**values)
+    except ConfigError:
+        raise
+    except (OSError, yaml.YAMLError, TypeError, ValueError, RecursionError):
         raise ConfigError("数据库配置文件无法读取或格式无效") from None
-    return DbConfig(**values)
