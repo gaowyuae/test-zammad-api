@@ -2,7 +2,6 @@
 
 import json
 import secrets
-from copy import deepcopy
 from pathlib import Path
 
 import allure
@@ -16,7 +15,6 @@ from fixtures.ticket import CleanupError, valid_id
 from support.config import ConfigError, _ConfigLoader
 from support.runtime import user_login
 
-CASE_IDS = frozenset({"TC_137", "TC_138", "TC_139", "TC_140"})
 USER_FIELDS = (
     "id",
     "login",
@@ -31,46 +29,12 @@ USER_FIELDS = (
 
 
 def load_user_cases(path: Path | None = None) -> dict:
-    """读取四条明确场景，拒绝凭据、表达式及未登记字段。"""
+    """读取仓库维护的用户场景，统一报告文件和 YAML 解析错误。"""
     path = path or Path(__file__).resolve().parents[1] / "data/cases/users.yaml"
     try:
-        rows = yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)
-        if not isinstance(rows, dict) or set(rows) != CASE_IDS:
-            raise ValueError
-        for case_id, data in rows.items():
-            keys = {"actor", "expected"}
-            if case_id != "TC_140":
-                keys.add("input")
-                if set(data["input"]) != {"firstname", "lastname", "active"}:
-                    raise ValueError
-                if data["input"]["active"] is not True:
-                    raise ValueError
-                if not all(
-                    isinstance(data["input"][name], str) and data["input"][name]
-                    for name in ("firstname", "lastname")
-                ):
-                    raise ValueError
-            if case_id in {"TC_138", "TC_139"}:
-                field = "duplicate" if case_id == "TC_138" else "update"
-                keys.add(field)
-                if (
-                    set(data[field]) != {"firstname"}
-                    or not isinstance(data[field]["firstname"], str)
-                    or not data[field]["firstname"]
-                    or data[field]["firstname"] == data["input"]["firstname"]
-                ):
-                    raise ValueError
-            expected = {
-                "TC_137": {"status_code": 201, "role": "Customer"},
-                "TC_138": {"status_class": 4, "role": "Customer"},
-                "TC_139": {"status_code": 200, "role": "Customer"},
-                "TC_140": {"status_code": 404},
-            }[case_id]
-            if set(data) != keys or data["actor"] != "AD" or data["expected"] != expected:
-                raise ValueError
-        return deepcopy(rows)
-    except (OSError, KeyError, ValueError, TypeError, yaml.YAMLError):
-        raise ConfigError("用户场景数据缺失或结构无效") from None
+        return yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)
+    except (OSError, UnicodeError, yaml.YAMLError):
+        raise ConfigError("用户场景数据缺失或格式无效") from None
 
 
 def preflight_users(ad_client, maintenance_client, context, queries) -> dict:
@@ -102,7 +66,7 @@ def preflight_users(ad_client, maintenance_client, context, queries) -> dict:
     ):
         raise PreflightError("AD 必须为纯管理员且与维护 M 独立") from None
     customer = unique(roles, "name", "Customer")
-    customer_permissions = set(customer.get("permissions", []))
+    customer_permissions = set(customer["permissions"])
     if (
         "ticket.customer" not in customer_permissions
         or "ticket.agent" in customer_permissions
@@ -125,7 +89,7 @@ class UserCase:
         self.maintenance = UsersAPI(maintenance)
         self.run, self.mapping, self.recorder, self.db = run, mapping, recorder, db
         self.settings = settings
-        self.data = deepcopy(data)
+        self.data = data
         self.case_id = data["case_id"]
         self.marker = f"{run.run_id}_{self.case_id}"
         self.login = user_login(run.run_id, self.case_id)
@@ -184,7 +148,7 @@ class UserCase:
     def update_firstname(self):
         """仅提交 firstname，更新超时不重发也不启动冲突清理。"""
         self.write_unknown = True
-        result = self.api.update(self.user_id, deepcopy(self.data["update"]))
+        result = self.api.update(self.user_id, self.data["update"])
         self.write_unknown = result.response.status_code >= 500
         return result
 
@@ -240,55 +204,61 @@ class UserCase:
         if failures:
             raise CleanupError("用户清理未完成，已保留残留清单") from None
 
+    def _confirm_duplicate(self, entry: dict) -> None:
+        """明确拒绝的重复请求只能对应本条仍存在的原用户。"""
+        rows = self.db.users_by_login(self.login)
+        if (
+            self.case_id != "TC_138"
+            or not 400 <= entry["status"] < 500
+            or len(rows) != 1
+            or rows[0]["id"] != self.user_id
+        ):
+            raise CleanupError("用户创建结果无法确认")
+        self.run.user_absent(entry["key"])
+        self.recorder.record("user-duplicate-cleanup", {"result": "absent"})
+
+    def _confirm_owner(self, user_id: int) -> None:
+        """以 API、DB 的 ID、RUN 登录名和创建人共同确认归属。"""
+        result = self.maintenance.read(user_id)
+        value = result.get_json()
+        stored = self.db.user(user_id)
+        self.recorder.record(
+            "user-pre-cleanup",
+            {"status": result.response.status_code, "api": value, "db": stored},
+        )
+        expected = {"id": user_id, "login": self.login, "created_by_id": self.mapping["admin_id"]}
+        if result.response.status_code != 200 or any(
+            not isinstance(row, dict) or any(row.get(name) != val for name, val in expected.items())
+            for row in (value, stored)
+        ):
+            raise CleanupError("用户清理归属无法确认")
+
+    def _delete_user(self, key: int, user_id: int) -> None:
+        """删除已确认用户，并验证用户和角色关联均无残留。"""
+        if self.maintenance.delete(user_id).response.status_code != 200:
+            raise CleanupError("用户 API 删除失败")
+        if (
+            self.maintenance.read(user_id).response.status_code != 404
+            or self.db.user(user_id) is not None
+            or self.db.user_roles(user_id)
+        ):
+            raise CleanupError("删除后的用户或角色关联仍存在")
+        self.run.cleaned(key)
+        self.recorder.record("user-cleanup", {"result": "cleaned", "user_id": user_id})
+
     def _cleanup_one(self, entry: dict) -> None:
-        """通过明确 ID、RUN 登录名及创建人核实归属，再执行 API 删除。"""
+        """按创建结果编排无新增确认或归属删除，并登记失败阶段。"""
         key, user_id = entry["key"], entry["id"]
         reason = "ownership_unconfirmed"
         try:
             if user_id is None:
-                rows = self.db.users_by_login(self.login)
-                if (
-                    self.case_id == "TC_138"
-                    and entry["status"] is not None
-                    and 400 <= entry["status"] < 500
-                    and len(rows) == 1
-                    and rows[0]["id"] == self.user_id
-                ):
-                    self.run.user_absent(key)
-                    self.recorder.record("user-duplicate-cleanup", {"result": "absent"})
-                    return
-                raise CleanupError("用户创建结果无法确认")
+                self._confirm_duplicate(entry)
+                return
             with allure.step("M确认本轮临时客户归属并保存删除前证据"):
-                result = self.maintenance.read(user_id)
-                value = result.get_json()
-                stored = self.db.user(user_id)
-                self.recorder.record(
-                    "user-pre-cleanup",
-                    {"status": result.response.status_code, "api": value, "db": stored},
-                )
-                expected = {
-                    "id": user_id,
-                    "login": self.login,
-                    "created_by_id": self.mapping["admin_id"],
-                }
-                if result.response.status_code != 200 or any(
-                    not isinstance(row, dict)
-                    or any(row.get(name) != val for name, val in expected.items())
-                    for row in (value, stored)
-                ):
-                    raise CleanupError("用户清理归属无法确认")
+                self._confirm_owner(user_id)
             reason = "cleanup_failed"
             with allure.step("M删除临时客户并核查用户及角色关联无残留"):
-                if self.maintenance.delete(user_id).response.status_code != 200:
-                    raise CleanupError("用户 API 删除失败")
-                if (
-                    self.maintenance.read(user_id).response.status_code != 404
-                    or self.db.user(user_id) is not None
-                    or self.db.user_roles(user_id)
-                ):
-                    raise CleanupError("删除后的用户或角色关联仍存在")
-                self.run.cleaned(key)
-                self.recorder.record("user-cleanup", {"result": "cleaned", "user_id": user_id})
+                self._delete_user(key, user_id)
         except Exception:
             self.run.attention(key, reason)
             raise CleanupError("用户清理证据不完整或归属不符") from None

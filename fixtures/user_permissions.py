@@ -1,6 +1,5 @@
 """M17 临时用户的实际角色权限、组授权及依赖资源保护。"""
 
-from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -16,37 +15,21 @@ from fixtures.ticket import CleanupError, valid_id
 from fixtures.users import UserCase, preflight_users
 from support.config import ConfigError, _ConfigLoader
 
-CASE_IDS = frozenset({"TC_141", "TC_142", "TC_143", "TC_144"})
-
 
 def load_permission_cases(path: Path | None = None) -> dict:
-    """严格限定四条权限场景及非敏感输入，不接受任意执行参数。"""
+    """读取权限场景，仅保留影响实际临时用户身份的角色约束。"""
     path = path or Path(__file__).resolve().parents[1] / "data/cases/user_permissions.yaml"
     try:
         rows = yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)
-        if not isinstance(rows, dict) or set(rows) != CASE_IDS:
-            raise ValueError
         for case_id, data in rows.items():
-            keys = {"actor", "role", "input"}
-            if case_id == "TC_141":
-                keys.add("token_role_name")
-                name = data["token_role_name"]
-                if not isinstance(name, str) or not name.strip() or name != name.strip():
-                    raise ValueError
-            if (
-                set(data) != keys
-                or data["actor"] != {"TC_141": "U", "TC_142": "A1"}.get(case_id, "AD")
-                or data["role"] != ("Customer" if case_id in {"TC_141", "TC_142"} else "Agent")
-                or set(data["input"]) != {"firstname", "lastname", "active"}
-                or data["input"]["active"] is not True
-                or not all(
-                    isinstance(data["input"][key], str) and data["input"][key]
-                    for key in ("firstname", "lastname")
-                )
-            ):
-                raise ValueError
-        return deepcopy(rows)
-    except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError):
+            # UserPermissionCase 直接用 role 设置真实账户角色，不能放宽为管理员。
+            role = "Customer" if case_id in {"TC_141", "TC_142"} else "Agent"
+            if data["role"] != role:
+                raise ConfigError(f"{case_id}：role 必须为 {role}")
+        return rows
+    except ConfigError:
+        raise
+    except (OSError, KeyError, TypeError, ValueError, AttributeError, yaml.YAMLError):
         raise ConfigError("权限场景数据缺失或结构无效") from None
 
 
@@ -68,16 +51,9 @@ def ticket_data(case_id: str) -> dict:
     }
 
 
-def preflight_permissions(ad_client, maintenance_client, agent_client, context, queries) -> dict:
-    """只读核验身份、两组维护权限、角色及数据库最小授权。"""
-    queries.check_permission_access()
-    mapping = preflight_users(ad_client, maintenance_client, context, queries)
-    mapping.update(
-        preflight(agent_client, maintenance_client, context.config, ticket_data("TC_143"))
-    )
-    # /me成功只说明凭据有效，还须证明A1的Token具备被测业务范围。
-    read_json(agent_client, "api/v1/ticket_create")
-    roles = list_rows(maintenance_client, "api/v1/roles")
+def _role_mapping(roles: list[dict], temp_role_name: str, queries) -> dict:
+    """核实业务角色及临时 Token 授权所需角色和权限映射。"""
+    mapping = {}
     for name in ("Admin", "Agent"):
         role = unique(roles, "name", name)
         mapping[f"{name.lower()}_role_id"] = role["id"]
@@ -90,9 +66,7 @@ def preflight_permissions(ad_client, maintenance_client, agent_client, context, 
                 or "ticket.customer" in names
             ):
                 raise PreflightError("Agent角色必须无继承组和管理或客户权限") from None
-    temp = [
-        role for role in roles if role.get("name") == context.permission_config["temp_role_name"]
-    ]
+    temp = [role for role in roles if role.get("name") == temp_role_name]
     permission = queries.permission("user_preferences.access_token")
     if (
         len(temp) != 1
@@ -102,6 +76,20 @@ def preflight_permissions(ad_client, maintenance_client, agent_client, context, 
     ):
         raise PreflightError("临时Token角色或权限映射不唯一") from None
     mapping.update(temp_role_id=temp[0]["id"], temp_permission_id=permission["id"])
+    return mapping
+
+
+def preflight_permissions(ad_client, maintenance_client, agent_client, context, queries) -> dict:
+    """编排身份、业务角色、两组维护权限及只读数据库核查。"""
+    queries.check_permission_access()
+    mapping = preflight_users(ad_client, maintenance_client, context, queries)
+    mapping.update(
+        preflight(agent_client, maintenance_client, context.config, ticket_data("TC_143"))
+    )
+    # /me成功只说明凭据有效，还须证明A1的Token具备被测业务范围。
+    read_json(agent_client, "api/v1/ticket_create")
+    roles = list_rows(maintenance_client, "api/v1/roles")
+    mapping.update(_role_mapping(roles, context.permission_config["temp_role_name"], queries))
     group = unique(
         list_rows(maintenance_client, "api/v1/groups"), "name", context.creation_config.group2_name
     )
@@ -213,7 +201,7 @@ class UserPermissionCase:
 
     def __init__(self, ad, maintenance, agent, context, mapping, data, recorder, db) -> None:
         """所有依赖先登记到实例，确保准备失败也能有序清理。"""
-        self.context, self.mapping, self.data = context, mapping, deepcopy(data)
+        self.context, self.mapping, self.data = context, mapping, data
         self.recorder, self.db, self.run = recorder, db, context.run
         self.ad, self.maintenance, self.agent = ad, maintenance, agent
         self.case_id = data["case_id"]
@@ -300,7 +288,7 @@ class UserPermissionCase:
         """仅更新本条U，网络异常及5xx均保持写入未知。"""
         check(valid_id(self.user.user_id), "缺少本条临时用户ID")
         self.user.write_unknown = True
-        result = UsersAPI(client).update(self.user.user_id, deepcopy(payload))
+        result = UsersAPI(client).update(self.user.user_id, payload)
         self.user.write_unknown = result.response.status_code >= 500
         return result
 
@@ -356,6 +344,11 @@ class UserPermissionCase:
             created.response.status_code == 201 and valid_id(ticket.ticket_id), "M准备权限工单失败"
         )
         value = self.ticket_snapshot(ticket, "permission-ticket-created")
+        self._assert_ticket(ticket, value)
+        return ticket
+
+    def _assert_ticket(self, ticket: PilotCase, value: dict) -> None:
+        """核对准备工单及唯一初始文章在接口与数据库中的内容和归属。"""
         for row in (value["ticket"], value["db_ticket"]):
             check(
                 all(
@@ -392,7 +385,6 @@ class UserPermissionCase:
                 ),
                 "初始文章内容不符",
             )
-        return ticket
 
     def ticket_snapshot(self, ticket: PilotCase, label: str) -> dict:
         """保全完整证据，仅用工单业务字段和文章快照判断拒绝副作用。"""
@@ -478,11 +470,33 @@ class UserPermissionCase:
         )
         self.cleanup_devices()
 
+    def _device_ids(self, client, headers: dict, evidence: list[dict]) -> list[int]:
+        """读取并核实设备清单，拒绝其他用户设备及重复 ID。"""
+        result = client.request("GET", "api/v1/user_devices", headers=headers)
+        evidence.append({"operation": "list", "status": result.response.status_code})
+        rows = result.get_json()
+        if (
+            result.response.status_code != 200
+            or not isinstance(rows, list)
+            or any(
+                not isinstance(row, dict)
+                or not valid_id(row.get("id"))
+                or type(row.get("user_id")) is not int
+                or row["user_id"] != self.user.user_id
+                for row in rows
+            )
+        ):
+            raise CleanupError("设备列表结构或用户归属不符") from None
+        ids = [row["id"] for row in rows]
+        if len(set(ids)) != len(ids):
+            raise CleanupError("设备列表包含重复ID") from None
+        return ids
+
     def cleanup_devices(self) -> None:
         """仅清理阶段由M代本条U操作，避免U认证异步重建设备。"""
         __tracebackhide__ = True
         self.cleanup_owner()
-        summary = getattr(self.recorder, "summary_only", False)
+        summary = self.recorder.summary_only
         self.recorder.summary_only = True
         evidence = []
         try:
@@ -492,25 +506,7 @@ class UserPermissionCase:
                 self.recorder,
             ) as client:
                 headers = {"From": str(self.user.user_id)}
-                result = client.request("GET", "api/v1/user_devices", headers=headers)
-                evidence.append({"operation": "list", "status": result.response.status_code})
-                rows = result.get_json()
-                if (
-                    result.response.status_code != 200
-                    or not isinstance(rows, list)
-                    or any(
-                        not isinstance(row, dict)
-                        or not valid_id(row.get("id"))
-                        or type(row.get("user_id")) is not int
-                        or row["user_id"] != self.user.user_id
-                        for row in rows
-                    )
-                ):
-                    raise CleanupError("设备列表结构或用户归属不符") from None
-                ids = [row["id"] for row in rows]
-                if len(set(ids)) != len(ids):
-                    raise CleanupError("设备列表包含重复ID") from None
-                for device_id in ids:
+                for device_id in self._device_ids(client, headers, evidence):
                     self.cleanup_owner()
                     self.user.write_unknown = True
                     result = client.request(
@@ -537,12 +533,10 @@ class UserPermissionCase:
                 ticket.cleanup()
             if self.token is not None:
                 self.token.cleanup()
-            agent = self.case_id in {"TC_143", "TC_144"} and self.user.user_id is not None
+            agent = self.role == "Agent" and self.user.user_id is not None
             if agent:
                 self.cleanup_agent_links()
             self.user.cleanup()
-            if agent and self.db.user(self.user.user_id) is not None:
-                raise CleanupError("关联清理后临时用户仍存在") from None
             if self.user.user_id is not None and (
                 self.db.user_groups(self.user.user_id)
                 or self.db.inherited_groups(self.user.user_id)

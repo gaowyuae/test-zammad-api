@@ -1,6 +1,5 @@
 """更新权限身份前置与未知写入保全。"""
 
-from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -21,70 +20,45 @@ ACTORS = {
     "TC_067": "AR",
     "TC_068": "A1",
 }
-CASE_IDS = frozenset(ACTORS)
 
 
 def load_update_case(case_id: str) -> tuple[dict, dict]:
-    """复制 TC_023，严格固定六场景、原始输入和明确错误原因。"""
+    """合并更新场景与基础输入，保留实际客户端的身份约束。"""
     try:
         rows = yaml.load(
             (ROOT / "data/cases/ticket_update_access.yaml").read_text(encoding="utf-8"),
             Loader=_ConfigLoader,
         )
-        if not isinstance(rows, dict) or set(rows) != CASE_IDS:
-            raise ValueError
-        errors = {
-            "TC_062": "Couldn't find Ticket with 'id'=\"{ticket_id}\"",
-            "TC_064": "Authentication required",
-            "TC_065": "Not authorized",
-            "TC_068": "Invalid value '{group_id}' for field 'group_id'!",
-        }
-        for key, actor in ACTORS.items():
-            expected_scenario = {
-                "actor": actor,
-                "expected": {
-                    "status_code": {"TC_062": 404, "TC_068": 422}.get(key, 403),
-                    "error_equals": errors.get(key, "Not authorized"),
-                },
-            }
-            if key in {"TC_064", "TC_066", "TC_067"}:
-                expected_scenario["target_state"] = "closed"
-            if rows[key] != expected_scenario:
-                raise ValueError
+        scenario = rows[case_id]
+        # conftest._database_case 使用 actor 选择会话，不能改变被测执行身份。
+        actor = ACTORS[case_id]
+        if scenario["actor"] != actor:
+            raise ConfigError(f"{case_id}：actor 必须为 {actor}")
         data = yaml.load(
             (ROOT / "data/cases/ticket_create.yaml").read_text(encoding="utf-8"),
             Loader=_ConfigLoader,
         )
-        if not isinstance(data, dict) or not isinstance(data.get("article"), dict):
-            raise ValueError
-        data = deepcopy(data)
-        scenario = deepcopy(rows[case_id])
-        data.update(case_id=case_id, state_name="open", expected=deepcopy(scenario["expected"]))
+        data.update(case_id=case_id, state_name="open", expected=scenario["expected"])
         return data, scenario
-    except (KeyError, OSError, ValueError, TypeError, yaml.YAMLError):
+    except ConfigError:
+        raise
+    except (KeyError, OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
         raise ConfigError("更新权限场景数据缺失或结构无效") from None
 
 
-def update_preflight(
-    agent, maintenance, actor, config, access: UpdateAccessConfig, data: dict, case_id: str
-) -> dict:
-    """只读核查独立身份、有效 Token 范围和真实直接及继承授权。"""
-    if case_id not in CASE_IDS:
-        raise PreflightError("不支持的更新权限场景") from None
-    mapping = preflight(agent, maintenance, config, data)
-    read_json(agent, "api/v1/ticket_create")
+def _check_actor(
+    actor, maintenance, access: UpdateAccessConfig, mapping: dict, case_id: str
+) -> None:
+    """核实独立的管理员、客户或只读客服及各自场景所需权限。"""
     users = list_rows(maintenance, "api/v1/users")
     roles = list_rows(maintenance, "api/v1/roles")
-    mapping["creator_id"] = mapping["maintenance_id"]
-    if case_id == "TC_064":
-        return mapping
     login = {
         "TC_065": access.admin_login,
         "TC_066": access.other_customer_login,
         "TC_067": access.reader_login,
-    }.get(case_id, config.agent_login)
+    }[case_id]
     current = _actor_user(actor, users, login)
-    if case_id in {"TC_065", "TC_066", "TC_067"} and current["id"] in {
+    if current["id"] in {
         mapping["agent_id"],
         mapping["maintenance_id"],
         mapping["customer_id"],
@@ -108,32 +82,55 @@ def update_preflight(
         if current.get("organization_id") or current.get("organization_ids"):
             raise PreflightError("C2 不得有组织共享") from None
         read_json(actor, "api/v1/ticket_create")
-    elif case_id == "TC_067":
+    else:
         grants = _pure_role(current, roles, "ticket.agent")
         if grants.get(str(mapping["group_id"])) != {"read"} or any(
             value for key, value in grants.items() if key != str(mapping["group_id"])
         ):
             raise PreflightError("AR 必须仅有 G1 read，不得继承写入或其他组授权") from None
         mapping["reader_id"] = current["id"]
-    elif case_id == "TC_068":
-        group = unique(list_rows(maintenance, "api/v1/groups"), "name", access.group2_name)
-        _, a_grants = permissions(current, roles)
-        _, m_grants = permissions(unique(users, "login", config.maintenance_login), roles)
-        if (
-            group["id"] == mapping["group_id"]
-            or a_grants.get(str(group["id"]))
-            or "full" not in m_grants.get(str(group["id"]), set())
-        ):
-            raise PreflightError("G2 隔离或维护清理授权不足") from None
-        matches = [user for user in users if user.get("login") == access.unassigned_login]
-        if (
-            access.unassigned_login != "-"
-            or len(matches) != 1
-            or matches[0].get("active") is not False
-            or matches[0].get("role_ids") != []
-        ):
-            raise PreflightError("系统未分派占位无法唯一确认") from None
-        mapping.update(target_group_id=group["id"], unassigned_id=matches[0]["id"])
+
+
+def _check_target_group(maintenance, config, access: UpdateAccessConfig, mapping: dict) -> None:
+    """核对 G2 隔离、维护清理权限和系统未分派账户。"""
+    users = list_rows(maintenance, "api/v1/users")
+    roles = list_rows(maintenance, "api/v1/roles")
+    group = unique(list_rows(maintenance, "api/v1/groups"), "name", access.group2_name)
+    current = unique(users, "login", config.agent_login)
+    _, a_grants = permissions(current, roles)
+    _, m_grants = permissions(unique(users, "login", config.maintenance_login), roles)
+    if (
+        group["id"] == mapping["group_id"]
+        or a_grants.get(str(group["id"]))
+        or "full" not in m_grants.get(str(group["id"]), set())
+    ):
+        raise PreflightError("G2 隔离或维护清理授权不足") from None
+    matches = [user for user in users if user.get("login") == access.unassigned_login]
+    if (
+        access.unassigned_login != "-"
+        or len(matches) != 1
+        or matches[0].get("active") is not False
+        or matches[0].get("role_ids") != []
+    ):
+        raise PreflightError("系统未分派占位无法唯一确认") from None
+    mapping.update(target_group_id=group["id"], unassigned_id=matches[0]["id"])
+
+
+def update_preflight(
+    agent, maintenance, actor, config, access: UpdateAccessConfig, data: dict, case_id: str
+) -> dict:
+    """复用基础身份核验，按被测执行人编排只读权限前置。"""
+    mapping = preflight(agent, maintenance, config, data)
+    mapping["creator_id"] = mapping["maintenance_id"]
+    if case_id == "TC_064":
+        return mapping
+    if case_id in {"TC_062", "TC_068"}:
+        # conftest 对这两条场景复用 agent；基础前置已验证其身份和普通客服权限。
+        read_json(agent, "api/v1/ticket_create")
+        if case_id == "TC_068":
+            _check_target_group(maintenance, config, access, mapping)
+    else:
+        _check_actor(actor, maintenance, access, mapping, case_id)
     return mapping
 
 

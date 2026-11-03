@@ -13,53 +13,28 @@ NEGATIVE_CASES = frozenset({"TC_026", "TC_027", "TC_037"})
 
 
 def load_title_case(case_id: str) -> tuple[dict, dict]:
-    """合并固定七条场景；缺失字段保持缺失，不解释表达式。"""
+    """合并仓库维护的标题场景，缺失标题保持缺失。"""
     try:
         rows = yaml.load(
             (ROOT / "data/cases/ticket_titles.yaml").read_text(encoding="utf-8"),
             Loader=_ConfigLoader,
         )
-        if not isinstance(rows, dict) or set(rows) != {
-            "TC_026",
-            "TC_027",
-            "TC_028",
-            "TC_029",
-            "TC_035",
-            "TC_036",
-            "TC_037",
-        }:
-            raise ValueError
         scenario = rows[case_id]
-        if not isinstance(scenario, dict) or not isinstance(scenario.get("expected"), dict):
-            raise ValueError
-        fields = {"expected"} if case_id == "TC_026" else {"title", "expected"}
-        if case_id == "TC_029":
-            fields.add("article")
-        if set(scenario) != fields:
-            raise ValueError
         data = yaml.load(
             (ROOT / "data/cases/ticket_create.yaml").read_text(encoding="utf-8"),
             Loader=_ConfigLoader,
         )
-        if not isinstance(data, dict) or not isinstance(data.get("article"), dict):
-            raise ValueError
         data.update(case_id=case_id, expected=scenario["expected"])
-        data.pop("title", None)
+        del data["title"]
         if "title" in scenario:
-            if not isinstance(scenario["title"], str):
-                raise ValueError
             data["title"] = scenario["title"]
         if case_id == "TC_029":
             article = scenario["article"]
-            if (
-                not isinstance(article, dict)
-                or set(article) != {"subject", "body"}
-                or not all(isinstance(value, str) for value in article.values())
-            ):
-                raise ValueError
             data["article"].update(subject=article["subject"], body=article["body"])
         return data, scenario
-    except (KeyError, OSError, ValueError, TypeError, yaml.YAMLError, ConfigError):
+    except ConfigError:
+        raise
+    except (KeyError, OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
         raise ConfigError("标题场景数据文件缺失或结构无效") from None
 
 
@@ -90,15 +65,11 @@ class TitleCase(PilotCase):
             and self.case_id in NEGATIVE_CASES
             and self.ticket_id is None
             and not self.write_unknown
-            and self.create_status is not None
             and 400 <= self.create_status < 500
         ):
             problem = None
             try:
-                if (
-                    self.creation_baseline is None
-                    or self.scoped_ticket_ids() != self.creation_baseline
-                ):
+                if self.scoped_ticket_ids() != self.creation_baseline:
                     problem = "专用范围工单集合改变，不能确认负向请求无残留"
             except Exception:
                 problem = "负向清理的数据库证据缺失"
