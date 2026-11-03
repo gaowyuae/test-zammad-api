@@ -40,17 +40,9 @@ class DbConfig:
 
 
 def load_db_config(path: Path) -> DbConfig:
-    """严格读取非敏感 YAML，拒绝密码、未知字段和重复键。"""
+    """读取 YAML，字段及取值由 DbConfig 检查。"""
     try:
         values = yaml.load(path.read_text(encoding="utf-8-sig"), Loader=_ConfigLoader)
-    except ConfigError:
-        raise
-    except (OSError, yaml.YAMLError, ValueError, RecursionError):
+    except (OSError, UnicodeError, yaml.YAMLError):
         raise ConfigError("数据库配置文件无法读取或格式无效") from None
-    required = {"host", "port", "dbname", "user", "password_env"}
-    optional = {"connect_timeout", "statement_timeout_ms", "lock_timeout_ms"}
-    if not isinstance(values, dict) or values.keys() - required - optional:
-        raise ConfigError("数据库配置根节点或字段无效") from None
-    if required - values.keys():
-        raise ConfigError("数据库配置缺少必需字段") from None
     return DbConfig(**values)
