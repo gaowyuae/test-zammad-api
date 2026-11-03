@@ -10,15 +10,10 @@ _KEYS = {
     "proxyauthorization",
     "cookie",
     "setcookie",
-    "password",
     "passwordconfirmation",
     "sessioncookie",
     "passwd",
     "pwd",
-    "token",
-    "secret",
-    "dsn",
-    "apikey",
     "credential",
     "credentials",
 }
@@ -84,14 +79,25 @@ class Redactor:
         active.add(id(value))
         try:
             if type(value) is dict:
-                return {
-                    self._text(key) if type(key) is str else "[unsupported-key]": (
+                pairs = []
+                for key, item in value.items():
+                    if type(key) is str:
+                        name = self._text(key)
+                    elif type(key) is int:
+                        name = self._text(str(key))
+                    else:
+                        name = "[unsupported-key]"
+                    cleaned = (
                         _MASK
                         if type(key) is str and sensitive_key(key)
                         else self._walk(item, active, depth + 1)
                     )
-                    for key, item in value.items()
-                }
+                    pairs.append([name, cleaned])
+                result = dict(pairs)
+                # 脱敏或键类型转换可能造成重名，保留每个安全条目而不覆盖。
+                if len(result) != len(pairs):
+                    return {"type": "mapping", "items": pairs}
+                return result
             # Requests 接受重复键的键值对序列；仅脱敏副本，不合并原始参数。
             if len(value) == 2 and type(value[0]) is str and sensitive_key(value[0]):
                 return [self._text(value[0]), _MASK]

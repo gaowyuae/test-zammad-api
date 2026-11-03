@@ -1,7 +1,7 @@
 """创建权限场景所需的非敏感身份映射。"""
 
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -22,25 +22,23 @@ class CreationConfig:
 
 
 def load_creation_config(path: Path) -> CreationConfig:
-    """严格校验六字段，不读取凭据或回显无效配置。"""
+    """构造创建身份映射并校验名称及凭据变量，不读取凭据。"""
     try:
         values = yaml.load(path.read_text(encoding="utf-8-sig"), Loader=_ConfigLoader)
-        names = {field.name for field in fields(CreationConfig)}
-        if not isinstance(values, dict) or set(values) != names:
-            raise ValueError
+        config = CreationConfig(**values)
         if any(
-            not isinstance(value, str)
-            or not value.strip()
-            or value != value.strip()
-            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)
-            for value in values.values()
+            not isinstance(value, str) or not value.strip()
+            for name, value in vars(config).items()
+            if not name.endswith("_token_env")
         ):
             raise ValueError
-        for name in ("customer_token_env", "admin_token_env"):
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", values[name]):
+        for value in (config.customer_token_env, config.admin_token_env):
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
                 raise ValueError
-        if values["customer_token_env"].casefold() == values["admin_token_env"].casefold():
+        if config.customer_token_env.casefold() == config.admin_token_env.casefold():
             raise ValueError
-        return CreationConfig(**values)
+        return config
+    except ConfigError:
+        raise
     except (OSError, UnicodeError, ValueError, TypeError, RecursionError, yaml.YAMLError):
         raise ConfigError("创建权限配置必须包含六个有效且非敏感的约定字段") from None

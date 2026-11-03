@@ -1,7 +1,7 @@
 """分派场景所需的非敏感身份映射。"""
 
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
@@ -22,32 +22,24 @@ class AssignmentConfig:
 
 
 def load_assignment_config(path: Path) -> AssignmentConfig:
-    """严格检查五个必需字段及可选A2凭据变量名，不读取 Token。"""
+    """构造身份映射并校验名称、占位账户和凭据变量，不读取 Token。"""
     try:
         values = yaml.load(path.read_text(encoding="utf-8-sig"), Loader=_ConfigLoader)
-        if isinstance(values, dict):
-            values.setdefault("peer_token_env", "ZAMMAD_A2_TOKEN")
-        if not isinstance(values, dict) or set(values) != {
-            f.name for f in fields(AssignmentConfig)
-        }:
-            raise ValueError
+        config = AssignmentConfig(**values)
         if any(
-            not isinstance(value, str)
-            or not value.strip()
-            or value != value.strip()
-            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in value)
-            for value in values.values()
+            not isinstance(value, str) or not value.strip()
+            for value in (config.peer_login, config.transfer_login, config.group2_name)
         ):
             raise ValueError
-        if values["unassigned_login"] != "-" or not re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*", values["transfer_token_env"]
+        if config.unassigned_login != "-" or any(
+            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value)
+            for value in (config.transfer_token_env, config.peer_token_env)
         ):
             raise ValueError
-        if (
-            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", values["peer_token_env"])
-            or values["peer_token_env"].casefold() == values["transfer_token_env"].casefold()
-        ):
+        if config.peer_token_env.casefold() == config.transfer_token_env.casefold():
             raise ValueError
-        return AssignmentConfig(**values)
+        return config
+    except ConfigError:
+        raise
     except (OSError, UnicodeError, ValueError, TypeError, RecursionError, yaml.YAMLError):
         raise ConfigError("分派配置必须包含有效且非敏感的约定字段") from None
