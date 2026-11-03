@@ -92,3 +92,27 @@ class EvidenceRecorder:
         """在整轮结束检查容量或保存失败造成的缺证。"""
         if self.incomplete:
             raise EvidenceError("测试证据不完整") from None
+
+
+class CaseEvidence:
+    """共享整轮预算，前置仅记录摘要，附件带 TC 编号与序号。"""
+
+    def __init__(self, recorder: EvidenceRecorder, case_id: str = "TC_023") -> None:
+        """使用同一脱敏器和预算，不另建证据缓冲。"""
+        self.target = recorder
+        self.redactor = recorder.redactor
+        self.summary_only = True
+        self.sequence = 0
+        self.case_id = case_id
+
+    def record(self, name: str, data: object) -> bool:
+        """避免前置用户列表的无关资料进入附件。"""
+        self.sequence += 1
+        if self.summary_only and isinstance(data, dict):
+            allowed = {"identity", "method", "url", "params", "status", "elapsed", "size", "error"}
+            data = {key: value for key, value in data.items() if key in allowed}
+        return self.target.record(f"{self.case_id}-{name}-{self.sequence}", data)
+
+    def ensure_complete(self) -> None:
+        """检查同一整轮取证预算是否完整。"""
+        self.target.ensure_complete()

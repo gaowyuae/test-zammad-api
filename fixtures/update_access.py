@@ -30,7 +30,7 @@ def load_update_case(case_id: str) -> tuple[dict, dict]:
             Loader=_ConfigLoader,
         )
         scenario = rows[case_id]
-        # conftest._database_case 使用 actor 选择会话，不能改变被测执行身份。
+        # database_case 使用 actor 选择会话，不能改变被测执行身份。
         actor = ACTORS[case_id]
         if scenario["actor"] != actor:
             raise ConfigError(f"{case_id}：actor 必须为 {actor}")
@@ -125,7 +125,7 @@ def update_preflight(
     if case_id == "TC_064":
         return mapping
     if case_id in {"TC_062", "TC_068"}:
-        # conftest 对这两条场景复用 agent；基础前置已验证其身份和普通客服权限。
+        # 工单装配对这两条场景复用 agent；基础前置已验证其身份和普通客服权限。
         read_json(agent, "api/v1/ticket_create")
         if case_id == "TC_068":
             _check_target_group(maintenance, config, access, mapping)

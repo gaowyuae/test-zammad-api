@@ -1,6 +1,11 @@
 """P0 的明确拒绝、未知写入和数据库清理核查。"""
 
-from fixtures.ticket import CleanupError, TicketCase
+from pathlib import Path
+
+import yaml
+
+from fixtures.ticket import CleanupError, TicketCase, load_case
+from support.config import _ConfigLoader
 
 
 class PilotCase(TicketCase):
@@ -57,3 +62,17 @@ class PilotCase(TicketCase):
         if remains:
             self.run.attention(self.key, "cleanup_failed")
             raise CleanupError("API 删除后仍有数据库残留") from None
+
+
+def load_pilot_case(case_id: str) -> tuple[dict, dict]:
+    """将仓库维护的 P0 场景覆盖合入基础工单输入。"""
+    path = Path(__file__).resolve().parents[1] / "data/cases/ticket_pilot.yaml"
+    scenario = yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)[case_id]
+    data = load_case()
+    data.update(
+        case_id=case_id,
+        title=scenario["title"],
+        state_name=scenario["state_name"],
+        expected=scenario["expected"],
+    )
+    return data, scenario

@@ -1,12 +1,15 @@
 """当前用例工单的创建登记和安全清理。"""
 
 from copy import deepcopy
+from pathlib import Path
 
 import allure
+import yaml
 
 from api.tickets import TicketsAPI
 from clients.http import HttpClient, HttpResult
 from reporting.evidence import EvidenceRecorder
+from support.config import _ConfigLoader
 
 
 class CleanupError(RuntimeError):
@@ -171,3 +174,9 @@ class TicketCase:
                 f"{self.case_id}-cleanup", {"result": "attention", "reason": reason}
             )
             raise CleanupError("清理未完成，已保留残留清单") from None
+
+
+def load_case() -> dict:
+    """加载仓库维护的基础工单输入。"""
+    path = Path(__file__).resolve().parents[1] / "data/cases/ticket_create.yaml"
+    return yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)

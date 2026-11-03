@@ -21,7 +21,7 @@ def load_creation_case(case_id: str) -> tuple[dict, dict]:
             Loader=_ConfigLoader,
         )
         scenario = scenarios[case_id]
-        # conftest._database_case 依此选择客户端，不能把负向用例换成其他身份。
+        # database_case 依此选择客户端，不能把负向用例换成其他身份。
         actor = {"TC_032": "C1", "TC_034": "AD"}.get(case_id, "A1")
         if scenario["actor"] != actor:
             raise ConfigError(f"{case_id}：actor 必须为 {actor}")
