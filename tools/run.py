@@ -10,6 +10,15 @@ import pytest
 from tools.metadata import write_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
+CONFIG_OPTIONS = (
+    ("env", "config", "local.yaml"),
+    ("run", "run-config", "run.local.yaml"),
+    ("db", "db-config", "db.local.yaml"),
+    ("creation", "creation-config", "creation.local.yaml"),
+    ("assignment", "assignment-config", "assignment.local.yaml"),
+    ("update_access", "update-access-config", "update_access.local.yaml"),
+    ("search", "search-config", "search.local.yaml"),
+)
 
 
 class _Parser(argparse.ArgumentParser):
@@ -20,23 +29,62 @@ class _Parser(argparse.ArgumentParser):
         self.exit(2, "运行失败：命令行参数无效。\n")
 
 
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """解析本地与 Jenkins 共用的配置路径和用例范围。"""
+    parser = _Parser(description="Zammad 首版已实现功能检查；pilot 为 P0 五条")
+    for _, option, filename in CONFIG_OPTIONS:
+        parser.add_argument(f"--{option}", type=Path, default=ROOT / "config" / filename)
+    parser.add_argument("--suite", choices=("functional", "pilot"), default="functional")
+    parser.add_argument("--output", type=Path, default=None)
+    return parser.parse_args(argv)
+
+
+def _write_environment(results: Path, metadata: dict, suite: str) -> None:
+    """在 Allure 中展示非敏感的版本与配置摘要。"""
+    results.mkdir()
+    properties = {
+        "git_commit": metadata["git_commit"] or "unavailable",
+        "git_dirty": str(metadata["git_dirty"]),
+        "framework_sources_sha256": metadata["framework_sources_sha256"],
+        "suite": suite,
+    }
+    properties.update(
+        {
+            f"config_{key}_sha256": value or "unavailable"
+            for key, value in metadata["config_sha256"].items()
+        }
+    )
+    (results / "environment.properties").write_text(
+        "\n".join(f"{key}={value}" for key, value in properties.items()), encoding="utf-8"
+    )
+
+
+def _pytest_args(configs: dict[str, Path], suite: str, output: Path) -> list[str]:
+    """构造功能用例参数，将所有执行产物限制在本轮目录。"""
+    # 自定义参数尚未注册时，等号避免外部配置路径被当作收集起点。
+    config_args = [
+        f"--zammad-{option}={configs[key].resolve()}" for key, option, _ in CONFIG_OPTIONS
+    ]
+    return [
+        str(ROOT / "tests/functional"),
+        "-m",
+        suite,
+        *config_args,
+        "--alluredir",
+        str(output / "allure-results"),
+        "--junitxml",
+        str(output / "junit.xml"),
+        "--basetemp",
+        str(output / "pytest-temp"),
+        "-o",
+        f"cache_dir={output / 'pytest-cache'}",
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     """创建全新结果目录，再交由同一 pytest 前置和清理路径执行。"""
-    parser = _Parser(description="Zammad 首版已实现功能检查；pilot 为 P0 五条")
-    parser.add_argument("--config", type=Path, default=ROOT / "config/local.yaml")
-    parser.add_argument("--run-config", type=Path, default=ROOT / "config/run.local.yaml")
-    parser.add_argument("--db-config", type=Path, default=ROOT / "config/db.local.yaml")
-    parser.add_argument("--creation-config", type=Path, default=ROOT / "config/creation.local.yaml")
-    parser.add_argument(
-        "--assignment-config", type=Path, default=ROOT / "config/assignment.local.yaml"
-    )
-    parser.add_argument(
-        "--update-access-config", type=Path, default=ROOT / "config/update_access.local.yaml"
-    )
-    parser.add_argument("--suite", choices=("functional", "pilot"), default="functional")
-    parser.add_argument("--search-config", type=Path, default=ROOT / "config/search.local.yaml")
-    parser.add_argument("--output", type=Path, default=None)
-    args = parser.parse_args(argv)
+    args = _parse_args(argv)
+    configs = {key: getattr(args, option.replace("-", "_")) for key, option, _ in CONFIG_OPTIONS}
     output = (args.output or ROOT / "artifacts" / f"run-{uuid4().hex}").resolve()
     try:
         output.mkdir(parents=True, exist_ok=False)
@@ -44,66 +92,12 @@ def main(argv: list[str] | None = None) -> int:
         print("运行失败：需要一个可写且不存在的结果目录。", file=sys.stderr)
         return 2
     try:
-        metadata = write_metadata(
-            ROOT,
-            output,
-            {
-                "env": args.config,
-                "run": args.run_config,
-                "db": args.db_config,
-                "creation": args.creation_config,
-                "assignment": args.assignment_config,
-                "update_access": args.update_access_config,
-                "search": args.search_config,
-            },
-            args.suite,
-        )
-        results = output / "allure-results"
-        results.mkdir()
-        # Allure 中只展示稳定、非敏感的版本与配置摘要。
-        properties = {
-            "git_commit": metadata["git_commit"] or "unavailable",
-            "git_dirty": str(metadata["git_dirty"]),
-            "framework_sources_sha256": metadata["framework_sources_sha256"],
-            "suite": args.suite,
-        }
-        properties.update(
-            {
-                f"config_{key}_sha256": value or "unavailable"
-                for key, value in metadata["config_sha256"].items()
-            }
-        )
-        (results / "environment.properties").write_text(
-            "\n".join(f"{key}={value}" for key, value in properties.items()), encoding="utf-8"
-        )
+        metadata = write_metadata(ROOT, output, configs, args.suite)
+        _write_environment(output / "allure-results", metadata, args.suite)
     except Exception:
         print("运行失败：版本或配置元数据无法保存。", file=sys.stderr)
         return 2
-    return int(
-        pytest.main(
-            [
-                str(ROOT / "tests/functional"),
-                "-m",
-                args.suite,
-                # 自定义参数尚未注册时，避免 pytest 把外部配置路径当作收集起点。
-                f"--zammad-config={args.config.resolve()}",
-                f"--zammad-run-config={args.run_config.resolve()}",
-                f"--zammad-db-config={args.db_config.resolve()}",
-                f"--zammad-creation-config={args.creation_config.resolve()}",
-                f"--zammad-assignment-config={args.assignment_config.resolve()}",
-                f"--zammad-update-access-config={args.update_access_config.resolve()}",
-                f"--zammad-search-config={args.search_config.resolve()}",
-                "--alluredir",
-                str(output / "allure-results"),
-                "--junitxml",
-                str(output / "junit.xml"),
-                "--basetemp",
-                str(output / "pytest-temp"),
-                "-o",
-                f"cache_dir={output / 'pytest-cache'}",
-            ]
-        )
-    )
+    return int(pytest.main(_pytest_args(configs, args.suite, output)))
 
 
 if __name__ == "__main__":

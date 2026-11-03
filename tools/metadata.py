@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -64,6 +65,32 @@ def _hash_file(path: Path) -> str | None:
         return None
 
 
+def _source_paths(root: Path) -> Iterator[Path]:
+    """发现来源文件，剪除产物、私有配置目录及外部目录链接。"""
+    for name in SOURCE_DIRS:
+        directory = root / name
+        if directory.is_symlink() or not directory.resolve().is_relative_to(root):
+            continue
+        for current, dirs, files in os.walk(directory):
+            dirs[:] = [
+                item
+                for item in dirs
+                if item not in EXCLUDED_DIRS
+                and not item.startswith(".")
+                and not (Path(current) / item).is_symlink()
+                and (Path(current) / item).resolve().is_relative_to(root)
+            ]
+            yield from (
+                Path(current) / file
+                for file in files
+                if Path(file).suffix in {".py", ".yaml", ".toml"}
+                and not file.startswith(".")
+                and ".private." not in file
+                and ".local." not in file
+                and file not in {"local.yaml", "secrets.yaml", "credentials.yaml"}
+            )
+
+
 def _source_hash(root: Path, configs: dict[str, Path]) -> str | None:
     """仅汇总明确的项目来源；该摘要只辅助诊断，不替代 Git 验收。"""
     root = root.resolve()
@@ -72,29 +99,7 @@ def _source_hash(root: Path, configs: dict[str, Path]) -> str | None:
     paths.update(root.glob("requirements*.txt"))
     paths.update((root / "config").glob("*.example.yaml"))
     try:
-        for name in SOURCE_DIRS:
-            directory = root / name
-            if directory.is_symlink() or not directory.resolve().is_relative_to(root):
-                continue
-            for current, dirs, files in os.walk(directory):
-                # 提前剪枝，避免进入产物、环境目录和外部目录链接。
-                dirs[:] = [
-                    item
-                    for item in dirs
-                    if item not in EXCLUDED_DIRS
-                    and not item.startswith(".")
-                    and not (Path(current) / item).is_symlink()
-                    and (Path(current) / item).resolve().is_relative_to(root)
-                ]
-                paths.update(
-                    Path(current) / file
-                    for file in files
-                    if Path(file).suffix in {".py", ".yaml", ".toml"}
-                    and not file.startswith(".")
-                    and ".private." not in file
-                    and ".local." not in file
-                    and file not in {"local.yaml", "secrets.yaml", "credentials.yaml"}
-                )
+        paths.update(_source_paths(root))
         digest = hashlib.sha256()
         for path in sorted(paths):
             resolved = path.resolve()

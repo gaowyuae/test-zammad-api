@@ -15,9 +15,9 @@ from fixtures.retained_roles import check_retained_roles
 from fixtures.search_baseline import BaselineError, SearchBaseline, load_mapping, preflight
 from reporting.evidence import EvidenceRecorder
 from support.config import load_config
-from support.run_config import load_run_config
+from support.run_config import RunConfig, load_run_config
 from support.runtime import EnvironmentRun
-from support.search_config import ALIASES, load_definition, load_search_config
+from support.search_config import ALIASES, SearchConfig, load_definition, load_search_config
 from tools.metadata import _hash_file, write_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,8 +55,8 @@ class _Parser(argparse.ArgumentParser):
         self.exit(2, "基线入口参数无效。\n")
 
 
-def main(argv: list[str] | None = None) -> int:
-    """显式选择初始化，默认只读校验，持锁覆盖全部业务操作。"""
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    """解析基线模式与配置路径，默认只读检查。"""
     parser = _Parser(description="M22搜索基线；默认check不创建或修复数据")
     parser.add_argument("--mode", choices=("init", "check"), default="check")
     parser.add_argument("--config", type=Path, default=ROOT / "config/local.yaml")
@@ -65,7 +65,58 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--search-config", type=Path, default=ROOT / "config/search.local.yaml")
     parser.add_argument("--definition", type=Path, default=ROOT / "data/baseline/search.yaml")
     parser.add_argument("--output", type=Path, default=None)
-    args = parser.parse_args(argv)
+    return parser.parse_args(argv)
+
+
+def _identities(search: SearchConfig, run_config: RunConfig) -> dict[str, Identity]:
+    """读取五个身份的凭据，并核对实际 Token 隔离。"""
+    identities = {
+        alias: Identity.from_env(alias, getattr(search, f"{alias.lower()}_token_env"))
+        for alias in ALIASES
+    }
+    identities["M"] = Identity.from_env("M", run_config.maintenance_token_env)
+    if len({identity.token for identity in identities.values()}) != 5:
+        raise ValueError("基线身份凭据必须独立")
+    return identities
+
+
+def _write_metadata(args: argparse.Namespace, output: Path) -> tuple[dict, dict]:
+    """保存来源元数据，要求基线使用的配置与定义摘要完整。"""
+    metadata = write_metadata(
+        ROOT,
+        output,
+        {
+            "env": args.config,
+            "run": args.run_config,
+            "db": args.db_config,
+            "search": args.search_config,
+        },
+        f"search-baseline-{args.mode}",
+    )
+    hashes = {**metadata["config_sha256"], "definition": _hash_file(args.definition)}
+    if metadata["framework_sources_sha256"] is None or any(
+        hashes[key] is None for key in ("env", "run", "db", "search", "definition")
+    ):
+        raise ValueError("基线来源摘要不完整")
+    return metadata, hashes
+
+
+def _finish(output: Path, mode: str, summary: dict) -> int:
+    """保存最终摘要，落盘失败时禁止报告成功。"""
+    try:
+        (output / "summary.json").write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError:
+        print("基线结果无法保存，不能报告成功。", file=sys.stderr)
+        return 1
+    print(f"搜索基线{mode}：{summary['status']}；业务TC新增执行数0。")
+    return 0 if summary["status"] == "passed" else 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """显式选择初始化，默认只读校验，持锁覆盖全部业务操作。"""
+    args = _parse_args(argv)
     output = (args.output or ROOT / "artifacts" / f"search-{uuid4().hex}").resolve()
     try:
         settings = load_config(args.config)
@@ -75,35 +126,10 @@ def main(argv: list[str] | None = None) -> int:
         definition = load_definition(args.definition)
         if run_config.state_dir.resolve().is_relative_to(ROOT):
             raise ValueError("共享目录不能位于工作区")
-        identities = {
-            alias: Identity.from_env(alias, getattr(search, f"{alias.lower()}_token_env"))
-            for alias in ALIASES
-        }
-        identities["M"] = Identity.from_env("M", run_config.maintenance_token_env)
-        if len({identity.token for identity in identities.values()}) != 5:
-            raise ValueError("基线身份凭据必须独立")
+        identities = _identities(search, run_config)
         output.mkdir(parents=True, exist_ok=False)
         recorder = FileEvidence(output)
-        metadata = write_metadata(
-            ROOT,
-            output,
-            {
-                "env": args.config,
-                "run": args.run_config,
-                "db": args.db_config,
-                "search": args.search_config,
-            },
-            f"search-baseline-{args.mode}",
-        )
-        hashes = {
-            **metadata["config_sha256"],
-            "search": _hash_file(args.search_config),
-            "definition": _hash_file(args.definition),
-        }
-        if metadata["framework_sources_sha256"] is None or any(
-            hashes[key] is None for key in ("env", "run", "db", "search", "definition")
-        ):
-            raise ValueError("基线来源摘要不完整")
+        metadata, hashes = _write_metadata(args, output)
     except Exception:
         print("基线前置配置、凭据或输出目录无效；未执行业务写入。", file=sys.stderr)
         return 2
@@ -159,15 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                 "基线前置、数据、索引、证据或清理核查失败；请查看脱敏证据及共享运行清单，不自动修复。"
             )
         )
-    try:
-        (output / "summary.json").write_text(
-            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    except OSError:
-        print("基线结果无法保存，不能报告成功。", file=sys.stderr)
-        return 1
-    print(f"搜索基线{args.mode}：{summary['status']}；业务TC新增执行数0。")
-    return 0 if summary["status"] == "passed" else 1
+    return _finish(output, args.mode, summary)
 
 
 if __name__ == "__main__":
