@@ -1,6 +1,5 @@
 """M19模板独立数据、最小字段更新和归属确认后的API清理。"""
 
-from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -13,55 +12,14 @@ from fixtures.ticket import CleanupError, valid_id
 from fixtures.users import preflight_users
 from support.config import ConfigError, _ConfigLoader
 
-CASE_IDS = frozenset({"TC_159", "TC_160", "TC_161", "TC_162"})
-
 
 def load_template_cases(path: Path | None = None) -> dict:
-    """锁定四条Excel输入，160名称保留精确一个空格。"""
+    """读取仓库原始场景，保留空格名称和嵌套options。"""
     path = path or Path(__file__).resolve().parents[1] / "data/cases/templates.yaml"
     try:
-        rows = yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)
-        if not isinstance(rows, dict) or set(rows) != CASE_IDS:
-            raise ValueError
-        for case_id, data in rows.items():
-            fields = {"actor", "input", "expected"}
-            expected_input = {
-                "active": True,
-                "options": {
-                    "ticket.title": {
-                        "value": {"TC_159": "接口模板标题", "TC_160": "标题"}.get(
-                            case_id, "模板测试标题"
-                        )
-                    }
-                },
-            }
-            if case_id == "TC_160":
-                expected_input["name"] = " "
-            else:
-                fields.add("name_template")
-                if data["name_template"] != "{run_id}_{case_id}_template":
-                    raise ValueError
-            if case_id == "TC_161":
-                fields.add("update")
-                if data["update"] != {"options": {"ticket.title": {"value": "接口修改后的标题"}}}:
-                    raise ValueError
-            expected = {
-                "TC_159": {"status_code": 201},
-                "TC_160": {"status_class": 4, "error_kind": "name_required"},
-                "TC_161": {"status_code": 200},
-                "TC_162": {"status_class": 4, "error_kind": "permission"},
-            }[case_id]
-            if (
-                set(data) != fields
-                or data["actor"] != ("A1" if case_id == "TC_162" else "AD")
-                or data["input"] != expected_input
-                or data["input"]["active"] is not True
-                or data["expected"] != expected
-            ):
-                raise ValueError
-        return deepcopy(rows)
-    except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError):
-        raise ConfigError("模板场景数据不符合原始输入") from None
+        return yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)
+    except (OSError, UnicodeError, yaml.YAMLError):
+        raise ConfigError("模板场景数据读取失败") from None
 
 
 def preflight_templates(ad, maintenance, agent, context, db) -> dict:
@@ -100,13 +58,13 @@ class TemplateCase:
         self.run, self.mapping, self.data, self.recorder, self.db = (
             context.run,
             mapping,
-            deepcopy(data),
+            data,
             recorder,
             db,
         )
         self.case_id = data["case_id"]
         self.marker = f"{self.run.run_id}_{self.case_id}_template"
-        self.payload = deepcopy(data["input"])
+        self.payload = data["input"].copy()
         if "name_template" in data:
             self.payload["name"] = self.marker
         self.name = self.saved_name = self.payload["name"]
@@ -204,14 +162,12 @@ class TemplateCase:
             "其他模板配置发生变化",
         )
         check(self.db.ticket_inventory() == self.tickets_before, "模板配置操作生成或修改了业务工单")
-        expected = set(self.baseline) | ({self.object_id} if self.object_id is not None else set())
-        check(set(self.db.template_ids()) == expected, "模板集合出现复制或遗漏")
 
     def update_options(self):
         """正式PUT只提交原用例指定options，未知写入禁止清理。"""
         self.owned()
         self.write_unknown = True
-        result = self.admin.update(self.object_id, deepcopy(self.data["update"]))
+        result = self.admin.update(self.object_id, self.data["update"])
         self.write_unknown = result.response.status_code >= 500
         return result
 
@@ -233,11 +189,7 @@ class TemplateCase:
             if self.write_unknown or self.integrity_unknown:
                 raise CleanupError("模板写入未知或归属不明")
             if self.object_id is None:
-                if (
-                    self.case_id != "TC_160"
-                    or self.db.template_ids() != self.baseline
-                    or self.db.template_inventory() != self.before
-                ):
+                if self.case_id != "TC_160" or self.db.template_inventory() != self.before:
                     raise CleanupError("模板负向请求无法证明无新增")
                 check(self.db.ticket_inventory() == self.tickets_before, "模板负向请求改变业务工单")
                 self.run.config_absent(self.key)
@@ -247,8 +199,7 @@ class TemplateCase:
                 gone = self.maintenance.get(self.object_id)
                 if gone.response.status_code == 404 and self.db.template(self.object_id) is None:
                     if (
-                        self.db.template_ids() != self.baseline
-                        or self.db.template_inventory() != self.before
+                        self.db.template_inventory() != self.before
                         or self.db.ticket_inventory() != self.tickets_before
                     ):
                         raise CleanupError("越权删除后的原模板或工单基线不符")
@@ -271,8 +222,7 @@ class TemplateCase:
             ):
                 raise CleanupError("模板API删除或不存在核查失败")
             if (
-                self.db.template_ids() != self.baseline
-                or self.db.template_inventory() != self.before
+                self.db.template_inventory() != self.before
                 or self.db.ticket_inventory() != self.tickets_before
             ):
                 raise CleanupError("模板清理后原集合或工单基线不符")

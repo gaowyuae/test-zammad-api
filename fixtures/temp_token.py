@@ -133,15 +133,9 @@ class TempToken:
         with HttpClient(
             self.context.settings, self.context.maintenance, self.recorder
         ) as maintenance:
-            if self.customer:
-                # 中途失败也必须尝试恢复明确已完成的授权，未知写入除外。
-                try:
-                    self._enable(maintenance)
-                except Exception:
-                    if self.role_started and not self.unknown:
-                        self._restore(maintenance)
-                    raise
             try:
+                if self.customer:
+                    self._enable(maintenance)
                 with HttpClient(
                     self.context.settings,
                     Identity("U"),
@@ -150,7 +144,8 @@ class TempToken:
                 ) as client:
                     yield TokensAPI(client)
             finally:
-                if self.customer and self.role_started and not self.unknown:
+                # 覆盖授权准备与Token操作失败；未知写入不得冲突恢复。
+                if self.role_started and not self.unknown:
                     self._restore(maintenance)
 
     def _rows(self, api: TokensAPI) -> list[dict]:

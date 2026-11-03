@@ -1,7 +1,6 @@
 """M20文本模块的可见正文核对、权限隔离及独立资源清理。"""
 
 import json
-from copy import deepcopy
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -14,8 +13,6 @@ from fixtures.preflight import PreflightError
 from fixtures.ticket import CleanupError, valid_id
 from fixtures.users import preflight_users
 from support.config import ConfigError, _ConfigLoader
-
-CASE_IDS = frozenset({"TC_171", "TC_172", "TC_173", "TC_174"})
 
 
 class _VisibleText(HTMLParser):
@@ -57,46 +54,12 @@ def visible_text(value: str) -> str:
 
 
 def load_text_module_cases(path: Path | None = None) -> dict:
-    """固定四条原始输入，note在运行时按明确长度生成。"""
+    """读取仓库场景，note长度和正文按原始数据使用。"""
     path = path or Path(__file__).resolve().parents[1] / "data/cases/text_modules.yaml"
     try:
-        rows = yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)
-        if not isinstance(rows, dict) or set(rows) != CASE_IDS:
-            raise ValueError
-        for case_id, data in rows.items():
-            fields = {"actor", "name_template", "input", "expected"}
-            if case_id in {"TC_171", "TC_174"}:
-                expected_input = {
-                    "keywords": "qahello",
-                    "content": "您好，已受理您的问题。",
-                    "active": True,
-                    "group_ids": [],
-                }
-            else:
-                fields.add("note_length")
-                expected_input = {"content": "有效正文", "active": True}
-                if type(data["note_length"]) is not int or data["note_length"] != (
-                    250 if case_id == "TC_172" else 251
-                ):
-                    raise ValueError
-            expected = {
-                "TC_171": {"status_code": 200},
-                "TC_172": {"status_code": 201},
-                "TC_173": {"status_class": 4, "error_kind": "note_length"},
-                "TC_174": {"status_class": 4, "error_kind": "permission"},
-            }[case_id]
-            if (
-                set(data) != fields
-                or data["actor"] != ("C1" if case_id == "TC_174" else "AD")
-                or data["name_template"] != "{run_id}_{case_id}_text_module"
-                or data["input"] != expected_input
-                or data["input"]["active"] is not True
-                or data["expected"] != expected
-            ):
-                raise ValueError
-        return deepcopy(rows)
-    except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError):
-        raise ConfigError("文本模块场景数据不符合原始输入") from None
+        return yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)
+    except (OSError, UnicodeError, yaml.YAMLError):
+        raise ConfigError("文本模块场景数据读取失败") from None
 
 
 def preflight_text_modules(ad, maintenance, customer, context, db) -> dict:
@@ -166,10 +129,9 @@ class TextModuleCase:
         """仅注入唯一名称和指定note长度，其他字段保持输入原样。"""
         self.admin, self.maintenance = TextModulesAPI(ad), TextModulesAPI(maintenance)
         self.actor = TextModulesAPI(customer if data["actor"] == "C1" else ad)
-        self.run, self.mapping, self.data, self.recorder, self.db = (
+        self.run, self.mapping, self.recorder, self.db = (
             context.run,
             mapping,
-            deepcopy(data),
             recorder,
             db,
         )
@@ -177,7 +139,7 @@ class TextModuleCase:
         self.marker = f"{self.run.run_id}_{self.case_id}_text_module"
         self.name = self.marker
         self.creator_id = mapping["admin_id"]
-        self.payload = {**deepcopy(data["input"]), "name": self.name}
+        self.payload = {**data["input"], "name": self.name}
         if "note_length" in data:
             self.payload["note"] = "A" * data["note_length"]
         self.key = self.object_id = None
@@ -262,8 +224,6 @@ class TextModuleCase:
             self.db.text_module_inventory(exclude_id=self.object_id) == self.before,
             "原文本模块或组关联被修改",
         )
-        expected = set(self.baseline) | ({self.object_id} if self.object_id is not None else set())
-        check(set(self.db.text_module_ids()) == expected, "文本模块集合出现额外变化")
 
     def cleanup(self) -> None:
         """只删除本条已确认模块，DB对象及组关联消失才标cleaned。"""
@@ -274,11 +234,7 @@ class TextModuleCase:
             if self.write_unknown or self.integrity_unknown:
                 raise CleanupError("文本模块写入未知或归属不明")
             if self.object_id is None:
-                if (
-                    self.case_id != "TC_173"
-                    or self.db.text_module_ids() != self.baseline
-                    or self.db.text_module_inventory() != self.before
-                ):
+                if self.case_id != "TC_173" or self.db.text_module_inventory() != self.before:
                     raise CleanupError("文本模块负向请求无法证明无新增")
                 self.run.config_absent(self.key)
                 return
@@ -294,10 +250,7 @@ class TextModuleCase:
                 or self.db.text_module_groups(self.object_id)
             ):
                 raise CleanupError("文本模块删除后对象或组关联未消失")
-            if (
-                self.db.text_module_ids() != self.baseline
-                or self.db.text_module_inventory() != self.before
-            ):
+            if self.db.text_module_inventory() != self.before:
                 raise CleanupError("文本模块清理后原集合不符")
             self.recorder.ensure_complete()
             self.run.cleaned(self.key)

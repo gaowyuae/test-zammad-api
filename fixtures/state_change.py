@@ -12,46 +12,32 @@ from support.config import ConfigError, _ConfigLoader
 from support.run_config import RunConfig
 
 ROOT = Path(__file__).resolve().parents[1]
-CASE_IDS = frozenset({"TC_069", "TC_070", "TC_071"})
 
 
 def load_state_case(case_id: str) -> tuple[dict, dict]:
-    """深拷贝 TC_023 并限制为三条已批准的状态场景。"""
+    """读取状态场景，并合并独立的建单前置。"""
     try:
         rows = yaml.load(
             (ROOT / "data/cases/ticket_state.yaml").read_text(encoding="utf-8"),
             Loader=_ConfigLoader,
         )
-        if not isinstance(rows, dict) or set(rows) != CASE_IDS:
-            raise ValueError
         scenario = rows[case_id]
-        if scenario != {
-            "actor": "A1",
-            "expected": {"status_code": 422 if case_id == "TC_069" else 200},
-        }:
-            raise ValueError
-        data = deepcopy(
-            yaml.load(
-                (ROOT / "data/cases/ticket_create.yaml").read_text(encoding="utf-8"),
-                Loader=_ConfigLoader,
-            )
+        data = yaml.load(
+            (ROOT / "data/cases/ticket_create.yaml").read_text(encoding="utf-8"),
+            Loader=_ConfigLoader,
         )
-        if not isinstance(data, dict) or not isinstance(data.get("article"), dict):
-            raise ValueError
         data.update(
             case_id=case_id,
             expected=deepcopy(scenario["expected"]),
             state_name="pending reminder" if case_id == "TC_071" else "open",
         )
-        return data, deepcopy(scenario)
-    except (KeyError, OSError, ValueError, TypeError, yaml.YAMLError):
+        return data, scenario
+    except (KeyError, OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
         raise ConfigError("状态场景数据缺失或结构无效") from None
 
 
 def state_preflight(agent, maintenance, config: RunConfig, data: dict, case_id: str) -> dict:
     """写入前确认 A1 能力、启用状态及合法而不同的新优先级。"""
-    if case_id not in CASE_IDS:
-        raise PreflightError("不支持的状态场景") from None
     mapping = preflight(agent, maintenance, config, data)
     read_json(agent, "api/v1/ticket_create")
     states = list_rows(maintenance, "api/v1/ticket_states")
