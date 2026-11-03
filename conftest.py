@@ -22,6 +22,21 @@ from support.runtime import FINISHED, EnvironmentRun
 ROOT = Path(__file__).resolve().parent
 
 
+def _finish_case(case, evidence, message: str) -> None:
+    """清理失败仍检查证据，并完整保留两类收尾异常。"""
+    errors = []
+    try:
+        case.cleanup()
+    except Exception as error:
+        errors.append(error)
+    try:
+        evidence.ensure_complete()
+    except Exception as error:
+        errors.append(error)
+    if errors:
+        raise ExceptionGroup(message, errors) from None
+
+
 def _check_search_baseline(context, *, index: bool) -> None:
     """在整轮锁内只读核对长期基线；仅准备阶段有限等待索引。"""
     from db.queries import Queries
@@ -57,7 +72,6 @@ def _check_search_baseline(context, *, index: bool) -> None:
         baseline.validate(mapping, index=index)
         context.search_identity = identity
         context.search_mapping = mapping
-        evidence.summary_only = False
         evidence.record(
             "check",
             {
@@ -200,17 +214,7 @@ def _configuration_case(context, request, kind):
         try:
             yield case, data
         finally:
-            errors = []
-            try:
-                case.cleanup()
-            except Exception as error:
-                errors.append(error)
-            try:
-                evidence.ensure_complete()
-            except Exception as error:
-                errors.append(error)
-            if errors:
-                raise ExceptionGroup(f"{case_id} 配置对象清理或取证失败", errors) from None
+            _finish_case(case, evidence, f"{case_id} 配置对象清理或取证失败")
 
 
 @pytest.fixture
@@ -253,17 +257,7 @@ def role_case(environment_run, request):
         try:
             yield case, data
         finally:
-            errors = []
-            try:
-                case.cleanup()
-            except Exception as error:
-                errors.append(error)
-            try:
-                evidence.ensure_complete()
-            except Exception as error:
-                errors.append(error)
-            if errors:
-                raise ExceptionGroup(f"{case_id} 保留处置或取证失败", errors) from None
+            _finish_case(case, evidence, f"{case_id} 保留处置或取证失败")
 
 
 @pytest.fixture
@@ -306,17 +300,7 @@ def user_permission_case(environment_run, request):
         try:
             yield case, data
         finally:
-            errors = []
-            try:
-                case.cleanup()
-            except Exception as error:
-                errors.append(error)
-            try:
-                evidence.ensure_complete()
-            except Exception as error:
-                errors.append(error)
-            if errors:
-                raise ExceptionGroup(f"{case_id} 清理或取证失败", errors) from None
+            _finish_case(case, evidence, f"{case_id} 清理或取证失败")
 
 
 @pytest.fixture
@@ -356,17 +340,7 @@ def user_case(environment_run, request):
         try:
             yield case, data
         finally:
-            errors = []
-            try:
-                case.cleanup()
-            except Exception as error:
-                errors.append(error)
-            try:
-                evidence.ensure_complete()
-            except Exception as error:
-                errors.append(error)
-            if errors:
-                raise ExceptionGroup(f"{case_id} 清理或取证失败", errors) from None
+            _finish_case(case, evidence, f"{case_id} 清理或取证失败")
 
 
 class _CaseEvidence:
@@ -410,12 +384,107 @@ def pytest_addoption(parser) -> None:
     )
 
 
-@pytest.fixture(scope="session")
-def environment_run(pytestconfig, request):
-    """持有整轮主机锁，直到业务取证和所有资源清理结束。"""
+def _load_case_configs(context, pytestconfig, items) -> list[tuple[str, str]]:
+    """按实际 fixture 依赖加载配置，仅保留身份差异所需的用例分支。"""
+    selected = {item.originalname for item in items}
+    fixtures = {name for item in items for name in item.fixturenames}
+    admin = (
+        bool(
+            fixtures
+            & {
+                "user_case",
+                "user_permission_case",
+                "role_case",
+                "template_case",
+                "text_module_case",
+                "macro_case",
+            }
+        )
+        or "test_tc_034" in selected
+    )
+    token_envs = []
+    if "search_case" in fixtures:
+        from support.search_config import ALIASES, load_definition, load_search_config
+
+        context.search_config = load_search_config(
+            Path(pytestconfig.getoption("zammad_search_config"))
+        )
+        context.search_definition = load_definition(ROOT / "data/baseline/search.yaml")
+        token_envs.extend(
+            (alias, getattr(context.search_config, f"{alias.lower()}_token_env"))
+            for alias in ALIASES
+        )
+    customer = bool(
+        selected
+        & {
+            "test_tc_032",
+            "test_tc_088",
+            "test_tc_089",
+            "test_tc_090",
+            "test_tc_148",
+            "test_tc_174",
+        }
+    )
+    if admin or customer or "creation_case" in fixtures:
+        from support.creation_config import load_creation_config
+
+        context.creation_config = load_creation_config(
+            Path(pytestconfig.getoption("zammad_creation_config"))
+        )
+        if customer:
+            token_envs.append(("C1", context.creation_config.customer_token_env))
+        if admin:
+            token_envs.append(("AD", context.creation_config.admin_token_env))
+    if "assignment_case" in fixtures or selected & {"test_tc_096", "test_tc_190"}:
+        from support.assignment_config import load_assignment_config
+
+        context.assignment_config = load_assignment_config(
+            Path(pytestconfig.getoption("zammad_assignment_config"))
+        )
+        if "test_tc_096" in selected:
+            token_envs.append(("A2", context.assignment_config.peer_token_env))
+        if selected & {"test_tc_061", "test_tc_190"}:
+            token_envs.append(("A12", context.assignment_config.transfer_token_env))
+    if "update_access_case" in fixtures or selected & {"test_tc_091", "test_tc_094"}:
+        from support.update_access_config import load_update_access_config
+
+        context.update_access_config = load_update_access_config(
+            Path(pytestconfig.getoption("zammad_update_access_config"))
+        )
+        if "test_tc_065" in selected:
+            token_envs.append(("AD", context.update_access_config.admin_token_env))
+        if selected & {"test_tc_066", "test_tc_091", "test_tc_094"}:
+            token_envs.append(("C2", context.update_access_config.customer_token_env))
+        if "test_tc_067" in selected:
+            token_envs.append(("AR", context.update_access_config.reader_token_env))
+    if "user_permission_case" in fixtures:
+        from fixtures.user_permissions import load_permission_cases
+
+        context.permission_config = {
+            "temp_role_name": load_permission_cases()["TC_141"]["token_role_name"]
+        }
+    return token_envs
+
+
+def _load_extra_identities(context, token_envs: list[tuple[str, str]]) -> None:
+    """每组凭据只读取一次，跨配置的同代号身份必须一致。"""
+    for alias, env in dict.fromkeys(token_envs):
+        identity = Identity.from_env(alias, env)
+        if alias in context.extra_identities and context.extra_identities[alias] != identity:
+            raise ConfigError("同一身份代号的凭据配置不一致") from None
+        context.extra_identities[alias] = identity
+    if context.search_config is not None:
+        from support.search_config import ALIASES
+
+        tokens = {context.extra_identities[alias].token for alias in ALIASES}
+        if len(tokens | {context.maintenance.token}) != 5:
+            raise ConfigError("搜索基线身份凭据必须独立") from None
+
+
+def _load_context(pytestconfig, items):
+    """在创建目录及获取环境锁前完成配置、凭据与输出安全检查。"""
     if not pytestconfig.getoption("allure_report_dir", default=None):
         pytest.fail("业务执行需要 Allure 输出，请使用 python -m tools.run", pytrace=False)
-
     if (
         pytestconfig.getoption("showlocals")
         or pytestconfig.getoption("fulltrace")
@@ -424,197 +493,86 @@ def environment_run(pytestconfig, request):
         pytest.fail("业务执行不能输出局部变量或完整参数回溯，以免泄露凭据", pytrace=False)
     settings = load_config(Path(pytestconfig.getoption("zammad_config")))
     config = load_run_config(Path(pytestconfig.getoption("zammad_run_config")))
-
     if urlsplit(settings.base_url).path not in ("", "/"):
         raise ConfigError("M03 的 base_url 必须为实例根地址，不包含 API 路径") from None
     if config.state_dir.resolve().is_relative_to(ROOT):
         raise ConfigError("共享状态目录必须位于项目工作区外") from None
-
-    # 缺失凭据在创建目录、获取锁和任何业务请求之前失败。
-    agent = Identity.from_env("A1", config.agent_token_env)
-    maintenance = Identity.from_env("M", config.maintenance_token_env)
-    creation_config = None
-    assignment_config = None
-    update_access_config = None
-    extra_identities = {}
-    selected = {item.originalname for item in request.session.items}
-    search_config = None
-    search_definition = None
-    if selected & {f"test_tc_{number}" for number in range(109, 119)}:
-        from support.search_config import ALIASES, load_definition, load_search_config
-
-        search_config = load_search_config(Path(pytestconfig.getoption("zammad_search_config")))
-        search_definition = load_definition(ROOT / "data/baseline/search.yaml")
-        for alias in ALIASES:
-            extra_identities[alias] = Identity.from_env(
-                alias, getattr(search_config, f"{alias.lower()}_token_env")
-            )
-        if len({extra_identities[alias].token for alias in ALIASES} | {maintenance.token}) != 5:
-            raise ConfigError("搜索基线身份凭据必须独立") from None
-    if selected & {
-        "test_tc_030",
-        "test_tc_031",
-        "test_tc_032",
-        "test_tc_034",
-        "test_tc_088",
-        "test_tc_089",
-        "test_tc_090",
-        "test_tc_137",
-        "test_tc_138",
-        "test_tc_139",
-        "test_tc_140",
-        "test_tc_141",
-        "test_tc_142",
-        "test_tc_143",
-        "test_tc_144",
-        "test_tc_145",
-        "test_tc_146",
-        "test_tc_147",
-        "test_tc_148",
-        "test_tc_159",
-        "test_tc_160",
-        "test_tc_161",
-        "test_tc_162",
-        "test_tc_171",
-        "test_tc_172",
-        "test_tc_173",
-        "test_tc_174",
-        "test_tc_187",
-        "test_tc_188",
-        "test_tc_189",
-        "test_tc_190",
-    }:
-        from support.creation_config import load_creation_config
-
-        creation_config = load_creation_config(
-            Path(pytestconfig.getoption("zammad_creation_config"))
-        )
-        for case, alias, env in (
-            ("test_tc_032", "C1", creation_config.customer_token_env),
-            ("test_tc_088", "C1", creation_config.customer_token_env),
-            ("test_tc_089", "C1", creation_config.customer_token_env),
-            ("test_tc_090", "C1", creation_config.customer_token_env),
-            ("test_tc_034", "AD", creation_config.admin_token_env),
-            ("test_tc_137", "AD", creation_config.admin_token_env),
-            ("test_tc_138", "AD", creation_config.admin_token_env),
-            ("test_tc_139", "AD", creation_config.admin_token_env),
-            ("test_tc_140", "AD", creation_config.admin_token_env),
-            ("test_tc_141", "AD", creation_config.admin_token_env),
-            ("test_tc_142", "AD", creation_config.admin_token_env),
-            ("test_tc_143", "AD", creation_config.admin_token_env),
-            ("test_tc_144", "AD", creation_config.admin_token_env),
-            ("test_tc_145", "AD", creation_config.admin_token_env),
-            ("test_tc_146", "AD", creation_config.admin_token_env),
-            ("test_tc_147", "AD", creation_config.admin_token_env),
-            ("test_tc_148", "AD", creation_config.admin_token_env),
-            ("test_tc_148", "C1", creation_config.customer_token_env),
-            ("test_tc_159", "AD", creation_config.admin_token_env),
-            ("test_tc_160", "AD", creation_config.admin_token_env),
-            ("test_tc_161", "AD", creation_config.admin_token_env),
-            ("test_tc_162", "AD", creation_config.admin_token_env),
-            ("test_tc_171", "AD", creation_config.admin_token_env),
-            ("test_tc_172", "AD", creation_config.admin_token_env),
-            ("test_tc_173", "AD", creation_config.admin_token_env),
-            ("test_tc_174", "AD", creation_config.admin_token_env),
-            ("test_tc_174", "C1", creation_config.customer_token_env),
-            ("test_tc_187", "AD", creation_config.admin_token_env),
-            ("test_tc_188", "AD", creation_config.admin_token_env),
-            ("test_tc_189", "AD", creation_config.admin_token_env),
-            ("test_tc_190", "AD", creation_config.admin_token_env),
-        ):
-            if case in selected:
-                extra_identities[alias] = Identity.from_env(alias, env)
-    if selected & {
-        "test_tc_059",
-        "test_tc_060",
-        "test_tc_061",
-        "test_tc_063",
-        "test_tc_096",
-        "test_tc_190",
-    }:
-        from support.assignment_config import load_assignment_config
-
-        assignment_config = load_assignment_config(
-            Path(pytestconfig.getoption("zammad_assignment_config"))
-        )
-        if "test_tc_096" in selected:
-            extra_identities["A2"] = Identity.from_env("A2", assignment_config.peer_token_env)
-        if selected & {"test_tc_061", "test_tc_190"}:
-            extra_identities["A12"] = Identity.from_env("A12", assignment_config.transfer_token_env)
-    if selected & {
-        "test_tc_062",
-        "test_tc_064",
-        "test_tc_065",
-        "test_tc_066",
-        "test_tc_067",
-        "test_tc_068",
-        "test_tc_091",
-        "test_tc_094",
-    }:
-        from support.update_access_config import load_update_access_config
-
-        update_access_config = load_update_access_config(
-            Path(pytestconfig.getoption("zammad_update_access_config"))
-        )
-        for case, alias, env in (
-            ("test_tc_065", "AD", update_access_config.admin_token_env),
-            ("test_tc_066", "C2", update_access_config.customer_token_env),
-            ("test_tc_091", "C2", update_access_config.customer_token_env),
-            ("test_tc_094", "C2", update_access_config.customer_token_env),
-            ("test_tc_067", "AR", update_access_config.reader_token_env),
-        ):
-            if case in selected:
-                identity = Identity.from_env(alias, env)
-                if alias in extra_identities and extra_identities[alias] != identity:
-                    raise ConfigError("同一身份代号的凭据配置不一致") from None
-                extra_identities[alias] = identity
-    recorder = EvidenceRecorder()
-    permission_config = None
-    if selected & {"test_tc_141", "test_tc_142", "test_tc_143", "test_tc_144"}:
-        from fixtures.user_permissions import load_permission_cases
-
-        permission_config = {"temp_role_name": load_permission_cases()["TC_141"]["token_role_name"]}
-    db_config = None
-    if any(item.get_closest_marker("database") for item in request.session.items):
+    context = SimpleNamespace(
+        settings=settings,
+        config=config,
+        recorder=EvidenceRecorder(),
+        agent=Identity.from_env("A1", config.agent_token_env),
+        maintenance=Identity.from_env("M", config.maintenance_token_env),
+        extra_identities={},
+        db_config=None,
+        creation_config=None,
+        assignment_config=None,
+        update_access_config=None,
+        permission_config=None,
+        search_config=None,
+        search_definition=None,
+    )
+    token_envs = _load_case_configs(context, pytestconfig, items)
+    _load_extra_identities(context, token_envs)
+    if any(item.get_closest_marker("database") for item in items):
         from db.config import load_db_config
 
-        db_config = load_db_config(Path(pytestconfig.getoption("zammad_db_config")))
-    with EnvironmentRun(config.state_dir, settings.env_id) as run:
-        if run.retained_roles and db_config is None:
-            from db.config import load_db_config
+        context.db_config = load_db_config(Path(pytestconfig.getoption("zammad_db_config")))
+    return context
 
-            db_config = load_db_config(Path(pytestconfig.getoption("zammad_db_config")))
-        if db_config is not None:
-            from db.queries import Queries
 
-            problem = None
-            try:
-                # 整轮准备前确认连接和只读权限；每用例仍建立独立连接。
-                with Queries(db_config, recorder) as db:
-                    from fixtures.retained_roles import check_retained_roles
+def _check_database(context, pytestconfig) -> None:
+    """持锁后验证数据库和历史保留角色，非数据库用例按需补载配置。"""
+    if context.run.retained_roles and context.db_config is None:
+        from db.config import load_db_config
 
-                    check_retained_roles(run, db)
-            except Exception:
-                problem = "数据库或历史保留角色前置不可用，请核对只读配置及角色隔离状态"
-            if problem:
-                pytest.fail(problem, pytrace=False)
-        context = SimpleNamespace(
-            settings=settings,
-            config=config,
-            run=run,
-            recorder=recorder,
-            agent=agent,
-            maintenance=maintenance,
-            db_config=db_config,
-            creation_config=creation_config,
-            assignment_config=assignment_config,
-            update_access_config=update_access_config,
-            extra_identities=extra_identities,
-            permission_config=permission_config,
-            search_config=search_config,
-            search_definition=search_definition,
+        context.db_config = load_db_config(Path(pytestconfig.getoption("zammad_db_config")))
+    if context.db_config is None:
+        return
+    from db.queries import Queries
+    from fixtures.retained_roles import check_retained_roles
+
+    problem = None
+    try:
+        # 每用例仍建立独立只读连接；这里先排除整轮无法执行的情况。
+        with Queries(context.db_config, context.recorder) as db:
+            check_retained_roles(context.run, db)
+    except Exception:
+        problem = "数据库或历史保留角色前置不可用，请核对只读配置及角色隔离状态"
+    if problem:
+        pytest.fail(problem, pytrace=False)
+
+
+def _finish_run(context) -> None:
+    """持锁完成基线复核、证据与残留检查，保留全部结束异常。"""
+    with allure.step("整轮证据和残留检查"):
+        context.recorder.record(
+            "run-summary", {"run_id": context.run.run_id, "resources": context.run.resources}
         )
-        if search_config is not None:
+        errors = []
+        if context.search_config is not None:
+            try:
+                _check_search_baseline(context, index=False)
+            except Exception:
+                errors.append(RuntimeError("整轮结束搜索基线核查失败，请查看脱敏证据"))
+        try:
+            context.recorder.ensure_complete()
+        except Exception as error:
+            errors.append(error)
+        if any(item["state"] not in FINISHED for item in context.run.resources):
+            errors.append(RuntimeError("本轮存在未解决资源，请查看共享运行清单"))
+        if errors:
+            raise ExceptionGroup("整轮结束检查失败", errors) from None
+
+
+@pytest.fixture(scope="session")
+def environment_run(pytestconfig, request):
+    """持有整轮主机锁，直到业务取证和所有资源清理结束。"""
+    context = _load_context(pytestconfig, request.session.items)
+    with EnvironmentRun(context.config.state_dir, context.settings.env_id) as run:
+        context.run = run
+        _check_database(context, pytestconfig)
+        if context.search_config is not None:
             problem = False
             try:
                 with allure.step("整轮搜索基线与索引前置检查"):
@@ -626,22 +584,7 @@ def environment_run(pytestconfig, request):
         try:
             yield context
         finally:
-            with allure.step("整轮证据和残留检查"):
-                recorder.record("run-summary", {"run_id": run.run_id, "resources": run.resources})
-                errors = []
-                if search_config is not None:
-                    try:
-                        _check_search_baseline(context, index=False)
-                    except Exception:
-                        errors.append(RuntimeError("整轮结束搜索基线核查失败，请查看脱敏证据"))
-                try:
-                    recorder.ensure_complete()
-                except Exception as error:
-                    errors.append(error)
-                if any(item["state"] not in FINISHED for item in run.resources):
-                    errors.append(RuntimeError("本轮存在未解决资源，请查看共享运行清单"))
-                if errors:
-                    raise ExceptionGroup("整轮结束检查失败", errors) from None
+            _finish_run(context)
 
 
 @pytest.fixture(autouse=True)
@@ -657,25 +600,17 @@ def business_guard(request):
 
 
 def load_case() -> dict:
-    """读取已评审 TC_023 数据，拒绝结构错误而不输出源文件内容。"""
+    """读取仓库维护的基础输入，加载错误不输出源文件内容。"""
     try:
         data = yaml.load(
             (ROOT / "data/cases/ticket_create.yaml").read_text(encoding="utf-8"),
             Loader=_ConfigLoader,
         )
-        keys = {"case_id", "title", "state_name", "priority_name", "article", "expected"}
-
-        if not isinstance(data, dict) or set(data) != keys or data["case_id"] != "TC_023":
-            raise ValueError
-        if not all(
-            isinstance(data[key], str) and data[key]
-            for key in ("title", "state_name", "priority_name")
-        ):
-            raise ValueError
-        if not isinstance(data["article"], dict) or not isinstance(data["expected"], dict):
+        # 基础编号参与资源登记，不能把其他场景误记为 TC_023。
+        if data["case_id"] != "TC_023":
             raise ValueError
         return data
-    except (OSError, ValueError, yaml.YAMLError, ConfigError):
+    except (KeyError, OSError, TypeError, ValueError, yaml.YAMLError):
         raise ConfigError("TC_023 数据文件缺失或结构无效") from None
 
 
@@ -711,17 +646,7 @@ def ticket_case(environment_run):
         try:
             yield case, data
         finally:
-            errors = []
-            try:
-                case.cleanup()
-            except Exception as error:
-                errors.append(error)
-            try:
-                evidence.ensure_complete()
-            except Exception as error:
-                errors.append(error)
-            if errors:
-                raise ExceptionGroup("TC_023 清理或取证失败", errors) from None
+            _finish_case(case, evidence, "TC_023 清理或取证失败")
 
 
 def load_pilot_case(case_id: str) -> tuple[dict, dict]:
@@ -731,11 +656,7 @@ def load_pilot_case(case_id: str) -> tuple[dict, dict]:
             (ROOT / "data/cases/ticket_pilot.yaml").read_text(encoding="utf-8"),
             Loader=_ConfigLoader,
         )
-        if not isinstance(rows, dict) or set(rows) != {"TC_025", "TC_033", "TC_058", "TC_072"}:
-            raise ValueError
         scenario = rows[case_id]
-        if not isinstance(scenario, dict) or not isinstance(scenario["expected"], dict):
-            raise ValueError
         data = load_case()
         data.update(
             case_id=case_id,
@@ -781,7 +702,7 @@ def creation_case(environment_run, request):
         data,
         scenario,
         CreationCase,
-        access=environment_run.creation_config,
+        kind="creation",
     )
 
 
@@ -798,7 +719,7 @@ def assignment_case(environment_run, request):
         data,
         scenario,
         AssignmentCase,
-        assignment=environment_run.assignment_config,
+        kind="assignment",
     )
 
 
@@ -815,7 +736,7 @@ def update_access_case(environment_run, request):
         data,
         scenario,
         UpdateAccessCase,
-        update_access=environment_run.update_access_config,
+        kind="update_access",
     )
 
 
@@ -826,9 +747,7 @@ def state_case(environment_run, request):
 
     case_id = request.node.originalname.removeprefix("test_").upper()
     data, scenario = load_state_case(case_id)
-    yield from _database_case(
-        environment_run, case_id, data, scenario, StateCase, state_change=True
-    )
+    yield from _database_case(environment_run, case_id, data, scenario, StateCase, kind="state")
 
 
 @pytest.fixture
@@ -844,7 +763,7 @@ def message_case(environment_run, request):
     elif case_id == "TC_091":
         login = environment_run.update_access_config.other_customer_login
     yield from _database_case(
-        environment_run, case_id, data, scenario, MessageCase, message_login=login
+        environment_run, case_id, data, scenario, MessageCase, kind="message", login=login
     )
 
 
@@ -859,8 +778,94 @@ def article_check_case(environment_run, request):
     if case_id == "TC_094":
         login = environment_run.update_access_config.other_customer_login
     yield from _database_case(
-        environment_run, case_id, data, scenario, ArticleCheckCase, article_login=login
+        environment_run, case_id, data, scenario, ArticleCheckCase, kind="article", login=login
     )
+
+
+def _ticket_clients(stack, context, evidence, actor_alias: str, peer: bool):
+    """建立独立会话，明确选择被测身份及可选文章作者。"""
+    clients = SimpleNamespace(
+        agent=stack.enter_context(HttpClient(context.settings, context.agent, evidence)),
+        maintenance=stack.enter_context(
+            HttpClient(context.settings, context.maintenance, evidence)
+        ),
+        anonymous=stack.enter_context(HttpClient(context.settings, Identity.anonymous(), evidence)),
+    )
+    if actor_alias == "anonymous":
+        clients.actor = clients.anonymous
+    elif actor_alias == "A1":
+        clients.actor = clients.agent
+    else:
+        clients.actor = stack.enter_context(
+            HttpClient(context.settings, context.extra_identities[actor_alias], evidence)
+        )
+    clients.peer = (
+        stack.enter_context(HttpClient(context.settings, context.extra_identities["A2"], evidence))
+        if peer
+        else None
+    )
+    return clients
+
+
+def _ticket_preflight(context, clients, data: dict, kind: str, login: str | None) -> dict:
+    """调用场景已有前置能力，保留实际身份、组及 Token 范围检查。"""
+    agent, maintenance, actor = clients.agent, clients.maintenance, clients.actor
+    case_id = data["case_id"]
+    if kind == "article":
+        from fixtures.article_checks import article_check_preflight
+
+        peer_login = context.assignment_config.peer_login if clients.peer is not None else None
+        return article_check_preflight(
+            agent,
+            maintenance,
+            actor,
+            clients.peer,
+            context.config,
+            login,
+            peer_login,
+            data,
+            case_id,
+        )
+    if kind == "message":
+        from fixtures.messages import message_preflight
+
+        return message_preflight(agent, maintenance, actor, context.config, login, data, case_id)
+    if kind == "state":
+        from fixtures.state_change import state_preflight
+
+        return state_preflight(agent, maintenance, context.config, data, case_id)
+    if kind == "update_access":
+        from fixtures.update_access import update_preflight
+
+        return update_preflight(
+            agent, maintenance, actor, context.config, context.update_access_config, data, case_id
+        )
+    if kind == "assignment":
+        from fixtures.assignment import assignment_preflight
+
+        return assignment_preflight(
+            agent, maintenance, actor, context.config, context.assignment_config, data, case_id
+        )
+    if kind == "creation":
+        from fixtures.creation_access import creation_preflight
+
+        return creation_preflight(
+            agent, maintenance, actor, context.config, context.creation_config, data, case_id
+        )
+    return preflight(agent, maintenance, context.config, data)
+
+
+def _check_case_database(db, mapping: dict, case_id: str, kind: str) -> None:
+    """写入前检查专项只读列，并为不存在工单场景确定安全 ID。"""
+    if kind == "state":
+        db.check_pending_access()
+    if case_id in {"TC_093", "TC_094"}:
+        db.check_attachment_access()
+    if case_id == "TC_062":
+        maximum = db.ticket_inventory()["max_id"]
+        if maximum > 2_147_482_647:
+            raise PreflightError("无法安全选择不存在工单ID")
+        mapping["missing_ticket_id"] = maximum + 1000
 
 
 def _database_case(
@@ -870,109 +875,34 @@ def _database_case(
     scenario: dict,
     case_type,
     *,
-    access=None,
-    assignment=None,
-    update_access=None,
-    state_change=False,
-    message_login=None,
-    article_login=None,
+    kind: str = "pilot",
+    login: str | None = None,
 ):
-    """共享有数据库证据的工单前置流程，逐用例释放会话和连接。"""
+    """编排工单前置和逐用例生命周期，残留由上游 business_guard 阻断。"""
     from db.queries import Queries
 
-    if any(item["state"] not in FINISHED for item in context.run.resources):
-        pytest.fail("前一用例有未处理残留，停止后续业务执行", pytrace=False)
     evidence = _CaseEvidence(context.recorder, case_id)
+    actor_alias = (
+        scenario["actor"]
+        if kind in {"creation", "assignment", "update_access", "message", "article"}
+        else "A1"
+    )
     with ExitStack() as stack:
-        agent = stack.enter_context(HttpClient(context.settings, context.agent, evidence))
-        maintenance = stack.enter_context(
-            HttpClient(context.settings, context.maintenance, evidence)
+        clients = _ticket_clients(
+            stack, context, evidence, actor_alias, kind == "article" and case_id == "TC_096"
         )
-        anonymous = stack.enter_context(
-            HttpClient(context.settings, Identity.anonymous(), evidence)
-        )
-        actor = agent
-        if update_access is not None and scenario["actor"] == "anonymous":
-            actor = anonymous
-        elif (
-            access is not None
-            or assignment is not None
-            or update_access is not None
-            or message_login is not None
-            or article_login is not None
-        ) and scenario["actor"] != "A1":
-            actor = stack.enter_context(
-                HttpClient(context.settings, context.extra_identities[scenario["actor"]], evidence)
-            )
-        peer = None
-        if article_login is not None and case_id == "TC_096":
-            peer = stack.enter_context(
-                HttpClient(context.settings, context.extra_identities["A2"], evidence)
-            )
         problem = None
         try:
             with allure.step(f"{case_id} 核对身份、字典与只读数据库"):
-                if article_login is not None:
-                    from fixtures.article_checks import article_check_preflight
-
-                    peer_login = context.assignment_config.peer_login if peer is not None else None
-                    mapping = article_check_preflight(
-                        agent,
-                        maintenance,
-                        actor,
-                        peer,
-                        context.config,
-                        article_login,
-                        peer_login,
-                        data,
-                        case_id,
-                    )
-                elif message_login is not None:
-                    from fixtures.messages import message_preflight
-
-                    mapping = message_preflight(
-                        agent, maintenance, actor, context.config, message_login, data, case_id
-                    )
-                elif state_change:
-                    from fixtures.state_change import state_preflight
-
-                    mapping = state_preflight(agent, maintenance, context.config, data, case_id)
-                elif update_access is not None:
-                    from fixtures.update_access import update_preflight
-
-                    mapping = update_preflight(
-                        agent, maintenance, actor, context.config, update_access, data, case_id
-                    )
-                elif assignment is not None:
-                    from fixtures.assignment import assignment_preflight
-
-                    mapping = assignment_preflight(
-                        agent, maintenance, actor, context.config, assignment, data, case_id
-                    )
-                elif access is None:
-                    mapping = preflight(agent, maintenance, context.config, data)
-                else:
-                    from fixtures.creation_access import creation_preflight
-
-                    mapping = creation_preflight(
-                        agent, maintenance, actor, context.config, access, data, case_id
-                    )
+                mapping = _ticket_preflight(context, clients, data, kind, login)
                 if "target_state" in scenario:
                     mapping["target_state_id"] = unique(
-                        list_rows(maintenance, "api/v1/ticket_states"),
+                        list_rows(clients.maintenance, "api/v1/ticket_states"),
                         "name",
                         scenario["target_state"],
                     )["id"]
                 db = stack.enter_context(Queries(context.db_config, evidence))
-                if state_change:
-                    db.check_pending_access()
-                if case_id in {"TC_093", "TC_094"}:
-                    db.check_attachment_access()
-                if case_id == "TC_062":
-                    maximum = db.ticket_inventory()["max_id"]
-                    if maximum > 2_147_482_647:
-                        raise PreflightError("无法安全选择不存在工单ID")
-                    mapping["missing_ticket_id"] = maximum + 1000
+                _check_case_database(db, mapping, case_id, kind)
         except Exception:
             problem = "工单前置核查失败，请核对身份、字典和只读数据库"
         if problem:
@@ -982,32 +912,18 @@ def _database_case(
             "preflight", {"run_id": context.run.run_id, "mapping": mapping, "result": "ready"}
         )
         evidence.ensure_complete()
-        # 更新及消息用例由 M 造工单，被测请求保留各自身份；匿名请求不继承凭据。
-        creator = anonymous if case_id == "TC_025" else actor
-        if (
-            state_change
-            or message_login is not None
-            or article_login is not None
-            or assignment is not None
-            or update_access is not None
-            or case_id in {"TC_058", "TC_072"}
-        ):
-            creator = maintenance
+        # 维护身份准备更新目标，被测请求继续使用独立 actor 会话。
+        creator = clients.anonymous if case_id == "TC_025" else clients.actor
+        if kind in {"state", "message", "article", "assignment", "update_access"} or case_id in {
+            "TC_058",
+            "TC_072",
+        }:
+            creator = clients.maintenance
             mapping["creator_id"] = mapping["maintenance_id"]
-        case = case_type(creator, maintenance, context.run, mapping, data, evidence, db)
-        if article_login is not None:
-            case.peer_api = TicketsAPI(peer) if peer is not None else None
+        case = case_type(creator, clients.maintenance, context.run, mapping, data, evidence, db)
+        if kind == "article":
+            case.peer_api = TicketsAPI(clients.peer) if clients.peer is not None else None
         try:
-            yield case, scenario, db, TicketsAPI(actor)
+            yield case, scenario, db, TicketsAPI(clients.actor)
         finally:
-            errors = []
-            try:
-                case.cleanup()
-            except Exception as error:
-                errors.append(error)
-            try:
-                evidence.ensure_complete()
-            except Exception as error:
-                errors.append(error)
-            if errors:
-                raise ExceptionGroup(f"{case_id} 清理或取证失败", errors) from None
+            _finish_case(case, evidence, f"{case_id} 清理或取证失败")
