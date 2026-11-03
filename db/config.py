@@ -1,12 +1,11 @@
 """读取独立只读账号的非敏感数据库配置。"""
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
 
-from support.config import ConfigError, _ConfigLoader, _valid_host
+from support.config import ConfigError, _ConfigLoader
 
 
 @dataclass(frozen=True)
@@ -23,19 +22,11 @@ class DbConfig:
     lock_timeout_ms: int = 3000
 
     def __post_init__(self) -> None:
-        """同时校验直接构造和 YAML 加载，阻止超时选项被注入。"""
-        if not isinstance(self.host, str) or not _valid_host(self.host):
-            raise ConfigError("数据库 host 必须为合法主机名或 IP") from None
-        for name in ("dbname", "user"):
+        """校验必需文本、端口及超时，避免配置文本改写连接选项。"""
+        for name in ("host", "dbname", "user", "password_env"):
             value = getattr(self, name)
-            if not isinstance(value, str) or not re.fullmatch(
-                r"[A-Za-z0-9_][A-Za-z0-9_.-]*", value
-            ):
-                raise ConfigError(f"数据库 {name} 必须为非空安全名称") from None
-        if not isinstance(self.password_env, str) or not re.fullmatch(
-            r"[A-Za-z_][A-Za-z0-9_]*", self.password_env
-        ):
-            raise ConfigError("数据库 password_env 必须为环境变量名称") from None
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigError(f"数据库 {name} 必须为非空字符串") from None
         limits = {
             "port": 65535,
             "connect_timeout": 2147483647,
@@ -54,7 +45,7 @@ def load_db_config(path: Path) -> DbConfig:
         values = yaml.load(path.read_text(encoding="utf-8-sig"), Loader=_ConfigLoader)
     except ConfigError:
         raise
-    except (OSError, UnicodeError, yaml.YAMLError, ValueError, RecursionError):
+    except (OSError, yaml.YAMLError, ValueError, RecursionError):
         raise ConfigError("数据库配置文件无法读取或格式无效") from None
     required = {"host", "port", "dbname", "user", "password_env"}
     optional = {"connect_timeout", "statement_timeout_ms", "lock_timeout_ms"}
