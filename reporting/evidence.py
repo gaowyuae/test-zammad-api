@@ -57,29 +57,36 @@ class EvidenceRecorder:
 
     def record(self, name: str, data: object) -> bool:
         """立即记录脱敏数据；容量越界返回缺证标志。"""
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name):
+        # FileEvidence 会将名称用于文件名，必须保留路径安全限制。
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
             self.incomplete = True
             raise EvidenceError("证据名称无效") from None
         try:
             body = json.dumps(self.redactor.redact(data), ensure_ascii=True, allow_nan=False)
-            encoded = body.encode("utf-8")
         except Exception:
             self.incomplete = True
             return False
-        safe_name = str(self.redactor.redact(name))
-        if (
-            len(encoded) <= self.attachment_limit
-            and self.total_bytes + len(encoded) <= self.run_limit
-        ):
-            return self._attach(safe_name, body, len(encoded))
+        # ensure_ascii 保证字符数就是落盘字节数，正常附件无需再复制为 bytes。
+        size = len(body)
+        safe_name = self.redactor.redact(name)
+        if size <= self.attachment_limit and self.total_bytes + size <= self.run_limit:
+            return self._attach(safe_name, body, size)
+        self._record_summary(safe_name, body)
+        return False
+
+    def _record_summary(self, name: str, body: str) -> None:
+        """标记超限缺证，并在预算允许时保存脱敏正文的安全摘要。"""
         self.incomplete = True
         summary = json.dumps(
-            {"incomplete": True, "reason": "evidence-budget", **content_summary(encoded)}
+            {
+                "incomplete": True,
+                "reason": "evidence-budget",
+                **content_summary(body.encode("ascii")),
+            }
         )
-        size = len(summary.encode("utf-8"))
+        size = len(summary)
         if size <= self.attachment_limit and self.total_bytes + size <= self.run_limit:
-            self._attach(safe_name, summary, size)
-        return False
+            self._attach(name, summary, size)
 
     def ensure_complete(self) -> None:
         """在整轮结束检查容量或保存失败造成的缺证。"""
