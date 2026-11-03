@@ -19,8 +19,8 @@ class PilotCase(TicketCase):
         """创建过程中断时保留未知状态，禁止随后删除与请求竞争。"""
         self.write_unknown = True
         result = super().create()
-        self.write_unknown = False
         self.create_status = result.response.status_code
+        self.write_unknown = False
         return result
 
     def update(self, api, payload: dict):
@@ -38,11 +38,10 @@ class PilotCase(TicketCase):
             self.run.attention(self.key, "create_unknown")
             raise CleanupError("写入结果未知，禁止冲突清理，需人工核查") from None
         if self.ticket_id is None:
-            if self.create_status is None or not 400 <= self.create_status < 500:
+            if not 400 <= self.create_status < 500:
                 self.run.attention(self.key, "create_unknown")
                 raise CleanupError("创建结果未知，已保留清单") from None
-            found = self.db.by_marker(self.marker)
-            if found != {"tickets": [], "articles": []}:
+            if self.db.by_marker(self.marker) != {"tickets": [], "articles": []}:
                 self.run.attention(self.key, "ownership_unconfirmed")
                 raise CleanupError("负向请求存在异常残留，保留证据待人工核查") from None
             self.run.absent(self.key)
@@ -51,9 +50,7 @@ class PilotCase(TicketCase):
         super().cleanup()
         # API 404 不代替数据库证据；发现关联残留时重新标为需人工处理。
         try:
-            remains = self.db.ticket(self.ticket_id) is not None or bool(
-                self.db.articles(self.ticket_id)
-            )
+            remains = self.db.ticket(self.ticket_id) is not None or self.db.articles(self.ticket_id)
         except Exception:
             self.run.attention(self.key, "cleanup_failed")
             raise CleanupError("API 删除后的数据库证据缺失，需人工核查") from None

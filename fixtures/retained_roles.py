@@ -9,12 +9,11 @@ def check_retained_roles(run, db) -> None:
     if not resources:
         return
     db.check_role_access()
-    seen = set()
+    ids = {item["role_id"] for item in resources}
+    if len(ids) != len(resources):
+        raise PreflightError("历史保留角色重复登记，需人工核查") from None
     for item in resources:
         role_id = item["role_id"]
-        if role_id in seen:
-            raise PreflightError("历史保留角色重复登记，需人工核查") from None
-        seen.add(role_id)
         expected = {
             "id": role_id,
             "name": item["name"],
@@ -28,4 +27,4 @@ def check_retained_roles(run, db) -> None:
             or db.role_users(role_id)
         ):
             raise PreflightError("获准保留角色状态发生变化，需人工核查") from None
-    db.recorder.record("retained-roles-checked", {"role_ids": sorted(seen), "result": "isolated"})
+    db.recorder.record("retained-roles-checked", {"role_ids": sorted(ids), "result": "isolated"})

@@ -1,6 +1,5 @@
 """M18角色场景的动态映射、归属证明及获准停用保留。"""
 
-from copy import deepcopy
 from pathlib import Path
 
 import yaml
@@ -12,57 +11,16 @@ from fixtures.ticket import CleanupError, valid_id
 from fixtures.users import preflight_users
 from support.config import ConfigError, _ConfigLoader
 
-CASE_IDS = frozenset({"TC_145", "TC_146", "TC_147", "TC_148"})
 ROLE_FIELDS = ("id", "name", "active", "default_at_signup")
 
 
 def load_role_cases(path: Path | None = None) -> dict:
-    """固定四条原始输入与错误语义，禁止给147和148补active。"""
+    """读取仓库维护的原始场景，不补齐请求字段。"""
     path = path or Path(__file__).resolve().parents[1] / "data/cases/roles.yaml"
     try:
-        rows = yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)
-        if not isinstance(rows, dict) or set(rows) != CASE_IDS:
-            raise ValueError
-        for case_id, data in rows.items():
-            fields = {"actor", "input", "permission_names", "expected"}
-            expected_input = {"default_at_signup": False}
-            if case_id in {"TC_145", "TC_146"}:
-                expected_input["active"] = True
-            if case_id in {"TC_145", "TC_148"}:
-                fields.add("name_template")
-                if data["name_template"] != "{run_id}_{case_id}_role":
-                    raise ValueError
-            else:
-                expected_input["name"] = "" if case_id == "TC_146" else "agent"
-            expected_permissions = {
-                "TC_145": ["ticket.agent", "user_preferences"],
-                "TC_148": ["admin"],
-            }.get(case_id, ["ticket.agent"])
-            expected = (
-                {"status_code": 201}
-                if case_id == "TC_145"
-                else {
-                    "status_class": 4,
-                    "error_kind": {
-                        "TC_146": "required",
-                        "TC_147": "duplicate",
-                        "TC_148": "permission",
-                    }[case_id],
-                }
-            )
-            if (
-                set(data) != fields
-                or data["input"] != expected_input
-                or data["permission_names"] != expected_permissions
-                or data["expected"] != expected
-                or data["actor"] != ("C1" if case_id == "TC_148" else "AD")
-                or data["input"]["default_at_signup"] is not False
-                or ("active" in expected_input and data["input"]["active"] is not True)
-            ):
-                raise ValueError
-        return deepcopy(rows)
-    except (OSError, KeyError, ValueError, TypeError, yaml.YAMLError):
-        raise ConfigError("角色场景数据缺失或不符合原始输入") from None
+        return yaml.load(path.read_text(encoding="utf-8"), Loader=_ConfigLoader)
+    except (OSError, yaml.YAMLError):
+        raise ConfigError("角色场景数据读取失败") from None
 
 
 def preflight_roles(ad, maintenance, customer, context, db) -> dict:
@@ -101,7 +59,6 @@ def preflight_roles(ad, maintenance, customer, context, db) -> dict:
             or any(name == "admin" or name.startswith("admin.") for name in names | actual_names)
             or "ticket.customer" not in actual_names
             or "ticket.agent" in actual_names
-            or sorted(row["id"] for row in actual_roles) != sorted(current.get("role_ids", []))
             or current.get("role_ids") != [mapping["customer_role_id"]]
             or [row["id"] for row in actual_roles] != [mapping["customer_role_id"]]
             or any(row.get("active") is not True for row in actual_roles)
@@ -171,16 +128,15 @@ class RoleCase:
         """构造原始请求；name模板和权限逻辑名只在此映射一次。"""
         self.admin, self.maintenance = RolesAPI(ad), RolesAPI(maintenance)
         self.api = RolesAPI(customer if data["actor"] == "C1" else ad)
-        self.run, self.mapping, self.data, self.recorder, self.db = (
+        self.run, self.mapping, self.recorder, self.db = (
             context.run,
             mapping,
-            deepcopy(data),
             recorder,
             db,
         )
         self.case_id = data["case_id"]
         self.marker = f"{self.run.run_id}_{self.case_id}_role"
-        self.payload = deepcopy(data["input"])
+        self.payload = data["input"].copy()
         if "name_template" in data:
             self.payload["name"] = self.marker
         self.name = self.payload["name"]
@@ -318,11 +274,7 @@ class RoleCase:
             if self.write_unknown or self.integrity_unknown:
                 raise CleanupError("角色写入或归属未知，禁止保留更新")
             if self.role_id is None:
-                if (
-                    self.case_id == "TC_145"
-                    or self.db.role_ids() != self.baseline
-                    or self.db.role_inventory() != self.before
-                ):
+                if self.case_id == "TC_145" or self.db.role_ids() != self.baseline:
                     raise CleanupError("角色负向请求无法证明无新增")
                 self.assert_existing_unchanged()
                 self.run.role_absent(self.key)

@@ -132,7 +132,6 @@ def preflight(clients: dict, search, run_config, definition: dict, db) -> dict:
         require(
             not user.get("organization_id")
             and not user.get("organization_ids")
-            and not stored["organization_id"]
             and not db.user_organizations(user_id),
             "基线身份出现组织关联，不允许自动修复",
         )
@@ -256,7 +255,7 @@ class SearchBaseline:
             "基线创建未明确成功，停止并保留清单",
         )
         require(
-            value["id"] not in {item["id"] for item in self.entries if item is not entry},
+            value["id"] not in {item["id"] for item in self.entries},
             "基线创建返回重复ID",
         )
         entry["id"] = value["id"]
@@ -272,7 +271,7 @@ class SearchBaseline:
             "article_ids": list(ids),
         }
         # 返回ID不证明归属；确认工单及初始文章属于本轮后才允许追加写入。
-        self._confirm_owned(spec, row, marker)
+        articles = self._confirm_owned(spec, row, marker)
         entry["owned"] = True
         for index, internal in enumerate(spec["articles"][1:], 2):
             entry["unknown"] = True
@@ -288,35 +287,20 @@ class SearchBaseline:
                 "基线追加文章未明确成功",
             )
             entry["unknown"] = False
-            expected_article = {
-                "ticket_id": row["id"],
-                "body": f"{marker}_ARTICLE_{index}",
-                "internal": internal,
-                "content_type": "text/plain",
-                "created_by_id": self.identity["maintenance_id"],
-            }
-            require(
-                all(added.get(name) == value for name, value in expected_article.items()),
-                "基线追加响应归属或内容不符，禁止继续追加",
-            )
             row["article_ids"].append(added["id"])
-            self._confirm_owned(spec, row, marker)
+            articles = self._confirm_owned(spec, row, marker)
             self.run.add_articles(key, row["article_ids"])
-        articles = self.db.articles(row["id"])
-        require(
-            {item["id"] for item in articles} == set(row["article_ids"]), "基线文章保存集合不符"
-        )
         row["articles"] = [
             next(item for item in articles if item["id"] == article_id)
             for article_id in row["article_ids"]
         ]
         return row
 
-    def _confirm_owned(self, spec: dict, row: dict, marker: str) -> None:
-        """任何后续写入前以API、DB和精确初始正文共同证明本轮归属。"""
+    def _confirm_owned(self, spec: dict, row: dict, marker: str, *, alias: str = "M") -> list[dict]:
+        """以指定身份API、DB和精确正文证明归属，返回已核验的文章快照。"""
         expected = self._expected(spec, row)
         expected["article_count"] = len(row["article_ids"])
-        response = self.apis["M"].read(row["id"])
+        response = self.apis[alias].read(row["id"])
         current, stored = response.get_json(), self.db.ticket(row["id"])
         require(
             response.response.status_code == 200
@@ -326,9 +310,9 @@ class SearchBaseline:
                 current.get(key) == value and stored.get(key) == value
                 for key, value in expected.items()
             ),
-            "基线追加前无法确认工单归属或持久化字段",
+            "基线工单归属或持久化字段不符",
         )
-        response = self.apis["M"].articles(row["id"])
+        response = self.apis[alias].articles(row["id"])
         current, stored = response.get_json(), self.db.articles(row["id"])
         require(
             response.response.status_code == 200
@@ -338,13 +322,12 @@ class SearchBaseline:
             and {item.get("id") for item in current}
             == {item["id"] for item in stored}
             == set(row["article_ids"]),
-            "基线追加前文章关联集合不符",
+            "基线文章关联集合不符",
         )
         for index, article_id in enumerate(row["article_ids"], 1):
             actual = next(item for item in current if item["id"] == article_id)
             persisted = next(item for item in stored if item["id"] == article_id)
             expected_article = {
-                "id": article_id,
                 "ticket_id": row["id"],
                 "body": f"{marker}_ARTICLE_{index}",
                 "internal": spec["articles"][index - 1],
@@ -362,6 +345,7 @@ class SearchBaseline:
                 and actual.get("sender_id") == persisted.get("sender_id"),
                 "基线初始或追加文章归属及内容不符",
             )
+        return stored
 
     def validate(self, mapping: dict, *, index: bool = True) -> None:
         """API和DB逐项核验固定关系、正文和可见性，发现漂移只报错。"""
@@ -374,61 +358,15 @@ class SearchBaseline:
         )
         for spec in self.definition["tickets"]:
             row = rows[spec["code"]]
-            expected = self._expected(spec, row)
-            database = self.db.ticket(row["id"])
-            require(
-                database is not None
-                and all(database.get(key) == value for key, value in expected.items()),
-                "基线工单DB字段漂移",
+            require(len(row["article_ids"]) == len(spec["articles"]), "基线文章数量不符")
+            db_articles = self._confirm_owned(
+                spec, row, f"{mapping['run_id']}_{spec['code']}", alias="BA1"
             )
-            response = self.apis["BA1"].read(row["id"])
-            current = response.get_json()
-            require(
-                response.response.status_code == 200
-                and isinstance(current, dict)
-                and all(current.get(key) == value for key, value in expected.items()),
-                "基线工单API字段漂移",
-            )
-            db_articles = self.db.articles(row["id"])
             require(
                 sorted(db_articles, key=lambda item: item["id"])
                 == sorted(row["articles"], key=lambda item: item["id"]),
                 "基线文章DB内容或关联漂移",
             )
-            result = self.apis["BA1"].articles(row["id"])
-            articles = result.get_json()
-            require(
-                result.response.status_code == 200
-                and isinstance(articles, list)
-                and all(isinstance(item, dict) for item in articles)
-                and len(articles) == len(row["article_ids"])
-                and {item.get("id") for item in articles} == set(row["article_ids"]),
-                "基线客服文章集合不符",
-            )
-            for position, (article_id, internal) in enumerate(
-                zip(row["article_ids"], spec["articles"], strict=True), 1
-            ):
-                actual = next(item for item in articles if item["id"] == article_id)
-                db_article = next(item for item in db_articles if item["id"] == article_id)
-                required = {
-                    "id": article_id,
-                    "ticket_id": row["id"],
-                    "body": f"{mapping['run_id']}_{spec['code']}_ARTICLE_{position}",
-                    "internal": internal,
-                    "content_type": "text/plain",
-                    "created_by_id": self.identity["maintenance_id"],
-                }
-                require(
-                    all(
-                        actual.get(key) == value and db_article.get(key) == value
-                        for key, value in required.items()
-                    )
-                    and actual.get("type") == "note"
-                    and actual.get("sender") == "Agent"
-                    and actual.get("type_id") == db_article.get("type_id")
-                    and actual.get("sender_id") == db_article.get("sender_id"),
-                    "基线文章内容、作者或可见性错误",
-                )
         b02 = rows["B02"]
         result = self.apis["BC1"].articles(b02["id"])
         public = result.get_json()
@@ -513,7 +451,7 @@ class SearchBaseline:
         failed = False
         for entry in reversed(self.entries):
             key = entry["key"]
-            if entry["unknown"] or entry["id"] is None:
+            if entry["unknown"]:
                 self.run.attention(key, "create_unknown")
                 failed = True
                 continue

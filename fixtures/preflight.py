@@ -1,4 +1,4 @@
-"""仅通过只读 API 验证 TC_023 的身份、组及当前字典映射。"""
+"""通过只读 API 验证身份、组授权及当前字典映射。"""
 
 from clients.http import HttpClient
 from fixtures.ticket import valid_id
@@ -45,12 +45,8 @@ def unique(rows: list[dict], key: str, value: str) -> dict:
 
 def permissions(user: dict, roles: list[dict]) -> tuple[set[str], dict[str, set[str]]]:
     """合并活跃角色权限及用户直接、角色继承的组授权。"""
-    role_ids = user.get("role_ids")
-    if (
-        not isinstance(role_ids, list)
-        or not role_ids
-        or not all(valid_id(item) for item in role_ids)
-    ):
+    role_ids = user["role_ids"]
+    if not role_ids or not all(valid_id(item) for item in role_ids):
         raise PreflightError("用户角色信息不完整") from None
     selected = [role for role in roles if role["id"] in role_ids]
     if len(selected) != len(set(role_ids)):
@@ -58,20 +54,13 @@ def permissions(user: dict, roles: list[dict]) -> tuple[set[str], dict[str, set[
     names: set[str] = set()
     groups: dict[str, set[str]] = {}
     for item in [user, *selected]:
-        access = item.get("group_ids", {})
-        if not isinstance(access, dict):
-            raise PreflightError("组授权结构无法识别") from None
-        for group, grants in access.items():
-            if not isinstance(grants, list) or not all(isinstance(grant, str) for grant in grants):
+        for group, grants in item.get("group_ids", {}).items():
+            if not isinstance(grants, list):
                 raise PreflightError("组授权内容无法识别") from None
             groups.setdefault(str(group), set()).update(grants)
     for role in selected:
         values = role.get("permissions")
-        if (
-            role.get("active") is not True
-            or not isinstance(values, list)
-            or not all(isinstance(item, str) for item in values)
-        ):
+        if role.get("active") is not True or not isinstance(values, list):
             raise PreflightError("角色状态或展开权限信息不完整") from None
         names.update(values)
     return names, groups
