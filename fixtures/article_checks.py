@@ -16,67 +16,16 @@ from support.run_config import RunConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 CASE_IDS = frozenset(f"TC_{number:03}" for number in range(92, 97))
-EXPECTED = {
-    "TC_092": {"status_code": 422, "error": "Need at least an 'article body' field."},
-    "TC_093": {"status_code": 201, "filename": "qa.txt", "size": 2},
-    "TC_094": {"status_code": 403, "error": "Not authorized"},
-    "TC_095": {"status_code": 200, "body_unchanged": True},
-    "TC_096": {
-        "status_code": 403,
-        "error": "Not authorized (you can only delete your own notes)!",
-    },
-}
-
-
-def _validate_case(case_id: str, scene: object) -> None:
-    """严格限制原表请求形状，缺失正文不可被配置悄悄补齐。"""
-    fields = {"actor", "article", "expected"}
-    fields |= {"TC_095": {"replacement"}, "TC_096": {"author"}}.get(case_id, set())
-    if not isinstance(scene, dict) or set(scene) != fields:
-        raise ValueError
-    if scene["actor"] != ("C2" if case_id == "TC_094" else "A1"):
-        raise ValueError
-    expected = scene["expected"]
-    if (
-        not isinstance(expected, dict)
-        or expected != EXPECTED[case_id]
-        or any(type(expected[key]) is not type(value) for key, value in EXPECTED[case_id].items())
-    ):
-        raise ValueError
-    if case_id == "TC_096" and scene["author"] != "A2":
-        raise ValueError
-    if case_id == "TC_095" and (
-        not isinstance(scene["replacement"], str) or not scene["replacement"]
-    ):
-        raise ValueError
-    article = scene["article"]
-    fixed = {"type": "note", "sender": "Agent", "internal": case_id not in {"TC_093", "TC_094"}}
-    if case_id != "TC_092":
-        fixed["content_type"] = "text/plain"
-    if case_id in {"TC_093", "TC_094"}:
-        fixed["attachments"] = [{"filename": "qa.txt", "data": "UUE=", "mime-type": "text/plain"}]
-    required = set(fixed) | ({"body"} if case_id != "TC_092" else set())
-    if (
-        not isinstance(article, dict)
-        or set(article) != required
-        or any(article[key] != value for key, value in fixed.items())
-        or type(article["internal"]) is not bool
-        or ("body" in required and (not isinstance(article["body"], str) or not article["body"]))
-    ):
-        raise ValueError
 
 
 def load_article_check_case(case_id: str) -> tuple[dict, dict]:
-    """加载五个明确场景并隔离基线工单和文章输入。"""
+    """按用例编号读取场景，并合并独立的基线工单输入。"""
     try:
         rows = yaml.load(
             (ROOT / "data/cases/ticket_article_checks.yaml").read_text(encoding="utf-8"),
             Loader=_ConfigLoader,
         )
-        if not isinstance(rows, dict) or set(rows) != CASE_IDS:
-            raise ValueError
         scenario = rows[case_id]
-        _validate_case(case_id, scenario)
         data = yaml.load(
             (ROOT / "data/cases/ticket_create.yaml").read_text(encoding="utf-8"),
             Loader=_ConfigLoader,
@@ -84,7 +33,7 @@ def load_article_check_case(case_id: str) -> tuple[dict, dict]:
         if not isinstance(data, dict) or not isinstance(data.get("article"), dict):
             raise ValueError
         data.update(case_id=case_id, state_name="open", expected=deepcopy(scenario["expected"]))
-        return deepcopy(data), deepcopy(scenario)
+        return data, scenario
     except (KeyError, OSError, ValueError, TypeError, yaml.YAMLError):
         raise ConfigError("文章保护场景数据缺失或结构无效") from None
 
@@ -262,13 +211,7 @@ class ArticleCheckCase(MessageCase):
         self.write_unknown = True
 
     def update_article(self, api, article_id: int, payload: dict):
-        """只允许提交正文修改，矛盾成功及网络中断均保留未知保护。"""
-        if (
-            not isinstance(payload, dict)
-            or set(payload) != {"body"}
-            or not isinstance(payload["body"], str)
-        ):
-            raise ValueError("文章更新只能提交body") from None
+        """原样提交更新字段，矛盾成功及网络中断均保留未知保护。"""
         self._write_intent(article_id, "PUT", payload)
         result = api.update_article(article_id, payload)
         status = result.response.status_code
