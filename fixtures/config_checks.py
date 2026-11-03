@@ -43,6 +43,21 @@ def assert_error(result, kind: str) -> None:
     check(matched, "配置拒绝原因不符合用例")
 
 
+def _stored_permissions(current: dict, role: str, db) -> set[str]:
+    """核对数据库唯一活跃角色及其权限，并与 Token 角色关联一致。"""
+    actual_roles = db.user_roles(current["id"])
+    actual_permissions = db.user_permissions(current["id"])
+    if (
+        len(actual_roles) != 1
+        or actual_roles[0].get("name") != role
+        or actual_roles[0].get("active") is not True
+        or current.get("role_ids") != [actual_roles[0]["id"]]
+        or any(row.get("active") is not True for row in actual_permissions)
+    ):
+        raise PreflightError("业务身份不是唯一活跃目标角色") from None
+    return {row["name"] for row in actual_permissions}
+
+
 def pure_actor(client, maintenance, login: str, role: str, db) -> int:
     """正向证明Token身份及工单scope，并核对API和DB纯业务角色。"""
     current = read_json(client, "api/v1/users/me")
@@ -55,24 +70,15 @@ def pure_actor(client, maintenance, login: str, role: str, db) -> int:
         raise PreflightError("配置场景业务身份与登录名不一致") from None
     roles = list_rows(maintenance, "api/v1/roles")
     names, _ = permissions(current, roles)
-    actual_roles = db.user_roles(current["id"])
-    actual_permissions = db.user_permissions(current["id"])
-    if (
-        len(actual_roles) != 1
-        or actual_roles[0].get("name") != role
-        or actual_roles[0].get("active") is not True
-        or current.get("role_ids") != [actual_roles[0]["id"]]
-        or any(row.get("active") is not True for row in actual_permissions)
-    ):
-        raise PreflightError("业务身份不是唯一活跃目标角色") from None
-    actual = {row["name"] for row in actual_permissions}
+    actual = _stored_permissions(current, role, db)
+    combined = names | actual
     required = f"ticket.{role.lower()}"
     other = "ticket.agent" if role == "Customer" else "ticket.customer"
     if (
         required not in names
         or required not in actual
-        or other in names | actual
-        or any(name == "admin" or name.startswith("admin.") for name in names | actual)
+        or other in combined
+        or any(name == "admin" or name.startswith("admin.") for name in combined)
     ):
         raise PreflightError("业务身份存在管理权限或角色混用") from None
     read_json(client, "api/v1/ticket_create")
@@ -82,15 +88,16 @@ def pure_actor(client, maintenance, login: str, role: str, db) -> int:
 def new_object_id(result, baseline: list[int], after: list[int]) -> int | None:
     """只从单个新增ID确认候选，任何已有ID或其他集合变化都阻塞。"""
     __tracebackhide__ = True
-    added = set(after) - set(baseline)
+    before_ids, after_ids = set(baseline), set(after)
+    added = after_ids - before_ids
     value = result.get_json()
     returned = value.get("id") if isinstance(value, dict) else None
     if (
-        not set(baseline).issubset(after)
+        not before_ids.issubset(after_ids)
         or len(added) > 1
         or (
             returned is not None
-            and (not valid_id(returned) or returned in baseline or returned not in added)
+            and (not valid_id(returned) or returned in before_ids or returned not in added)
         )
     ):
         raise CleanupError("配置创建返回已有ID或发生不可归属的集合变化") from None

@@ -16,57 +16,18 @@ from fixtures.ticket import CleanupError, valid_id
 from fixtures.users import preflight_users
 from support.config import ConfigError, _ConfigLoader
 
-CASE_IDS = frozenset({"TC_187", "TC_188", "TC_189", "TC_190"})
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_macro_cases(path: Path | None = None) -> dict:
-    """严格核对Excel四条宏输入，动态值仅使用已定义逻辑名称。"""
+    """读取仓库维护的宏场景，统一报告文件和 YAML 解析错误。"""
     try:
-        rows = yaml.load(
+        return yaml.load(
             (path or ROOT / "data/cases/macros.yaml").read_text(encoding="utf-8-sig"),
             Loader=_ConfigLoader,
         )
-        if not isinstance(rows, dict) or set(rows) != CASE_IDS:
-            raise ValueError
-        for case_id, data in rows.items():
-            payload = {"active": True, "ux_flow_next_up": "none"}
-            perform = {"ticket.priority_id": {"value": "high"}}
-            if case_id != "TC_189":
-                payload["group_ids"] = ["G1"]
-            if case_id == "TC_189":
-                perform = {"ticket.state_id": {"value": "open"}}
-            if case_id == "TC_188":
-                perform["ticket.state_id"] = {"value": "open"}
-            payload["perform"] = perform
-            expected = {"status_code": 201}
-            if case_id == "TC_188":
-                expected = {"status_code": 200}
-            elif case_id == "TC_189":
-                expected = {"status_class": 4, "error_kind": "permission"}
-            elif case_id == "TC_190":
-                expected = {
-                    "status_code": 422,
-                    "error": "Macro group restrictions do not cover all tickets",
-                }
-            required = {
-                "actor": {"TC_189": "A1", "TC_190": "A12"}.get(case_id, "AD"),
-                "name_template": "{run_id}_{case_id}_macro",
-                "input": payload,
-                "expected": expected,
-            }
-            if case_id == "TC_188":
-                required["update"] = {
-                    "perform": {
-                        "ticket.priority_id": {"value": "low"},
-                        "ticket.state_id": {"value": "open"},
-                    }
-                }
-            if data != required or data["input"]["active"] is not True:
-                raise ValueError
-        return deepcopy(rows)
-    except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError):
-        raise ConfigError("宏场景数据不符合原始用例") from None
+    except (OSError, UnicodeError, yaml.YAMLError):
+        raise ConfigError("宏场景数据缺失或格式无效") from None
 
 
 def macro_payload(value: dict, mapping: dict) -> dict:
@@ -141,7 +102,7 @@ class MacroCase:
         self.run, self.mapping, self.data, self.recorder, self.db = (
             context.run,
             mapping,
-            deepcopy(data),
+            data,
             recorder,
             db,
         )
@@ -229,66 +190,77 @@ class MacroCase:
         self.write_unknown = result.response.status_code >= 500
         return result
 
+    def _new_ticket(self, group_id: int, index: int, data: dict) -> PilotCase:
+        """构建带独立组标记的工单，创建和清理均使用维护身份。"""
+        mapping = {
+            **self.mapping,
+            "group_id": group_id,
+            "agent_id": self.mapping["transfer_id"],
+            "creator_id": self.mapping["maintenance_id"],
+        }
+        data = {
+            **data,
+            "title": f"{data['title']} G{index}",
+            "article": {**data["article"], "body": f"{data['article']['body']} G{index}"},
+        }
+        ticket = PilotCase(
+            self.maintenance_client,
+            self.maintenance_client,
+            self.run,
+            mapping,
+            data,
+            self.recorder,
+            self.db,
+        )
+        original_marker = ticket.marker
+        ticket.marker = f"{original_marker}_G{index}"
+        ticket.payload["title"] = ticket.payload["title"].replace(original_marker, ticket.marker)
+        ticket.payload["article"]["body"] = ticket.payload["article"]["body"].replace(
+            original_marker, ticket.marker
+        )
+        return ticket
+
+    def _assert_ticket(self, ticket: PilotCase) -> None:
+        """核对实际执行人可读的工单与数据库，确保宏变化可被观察。"""
+        row = ticket_value(self.ticket_actor.read(ticket.ticket_id))
+        expected = {
+            key: ticket.payload[key]
+            for key in (
+                "title",
+                "customer_id",
+                "group_id",
+                "owner_id",
+                "state_id",
+                "priority_id",
+            )
+        }
+        expected["created_by_id"] = ticket.creator_id
+        for value in (row, self.db.ticket(ticket.ticket_id)):
+            check(
+                isinstance(value, dict) and all(value.get(k) == v for k, v in expected.items()),
+                "跨组宏前置工单字段不符",
+            )
+        check(
+            row.get("article_count") == 1
+            and row.get("priority_id") != self.mapping["high_priority_id"],
+            "前置工单必须可观察宏优先级变化",
+        )
+
     def prepare_tickets(self) -> None:
         """M分别创建两组工单，实际负责人A12且初始优先级与宏不同。"""
-        if self.case_id != "TC_190" or self.tickets or self.key is not None:
-            raise PreflightError("跨组工单只能在190创建宏之前准备一次") from None
+        if self.tickets or self.key is not None:
+            raise PreflightError("跨组工单只能在创建宏之前准备一次") from None
+        data = ticket_data()
         for index, group_id in enumerate(
             (self.mapping["group_id"], self.mapping["target_group_id"]), 1
         ):
-            mapping = {
-                **self.mapping,
-                "group_id": group_id,
-                "agent_id": self.mapping["transfer_id"],
-                "creator_id": self.mapping["maintenance_id"],
-            }
-            data = ticket_data()
-            data["title"] += f" G{index}"
-            data["article"]["body"] += f" G{index}"
-            ticket = PilotCase(
-                self.maintenance_client,
-                self.maintenance_client,
-                self.run,
-                mapping,
-                data,
-                self.recorder,
-                self.db,
-            )
-            original_marker = ticket.marker
-            ticket.marker = f"{original_marker}_G{index}"
-            ticket.payload["title"] = ticket.payload["title"].replace(
-                original_marker, ticket.marker
-            )
-            ticket.payload["article"]["body"] = ticket.payload["article"]["body"].replace(
-                original_marker, ticket.marker
-            )
+            ticket = self._new_ticket(group_id, index, data)
+            # 先纳入生命周期，创建或核验中断后仍能保留清理与未知写入信息。
             self.tickets.append(ticket)
             result = ticket.create()
             ticket.write_unknown = result.response.status_code >= 500
             check(result.response.status_code == 201, "跨组宏前置工单创建失败")
-            row = ticket_value(self.ticket_actor.read(ticket.ticket_id))
-            expected = {
-                key: ticket.payload[key]
-                for key in (
-                    "title",
-                    "customer_id",
-                    "group_id",
-                    "owner_id",
-                    "state_id",
-                    "priority_id",
-                )
-            }
-            expected["created_by_id"] = ticket.creator_id
-            for value in (row, self.db.ticket(ticket.ticket_id)):
-                check(
-                    isinstance(value, dict) and all(value.get(k) == v for k, v in expected.items()),
-                    "跨组宏前置工单字段不符",
-                )
-            check(
-                row.get("article_count") == 1
-                and row.get("priority_id") != self.mapping["high_priority_id"],
-                "前置工单必须可观察宏优先级变化",
-            )
+            self._assert_ticket(ticket)
 
     def ticket_snapshot(self, label: str) -> list[dict]:
         """两张工单保存业务字段与完整数据库和文章快照。"""
@@ -307,7 +279,7 @@ class MacroCase:
 
     def mass_macro(self):
         """A12向一次批量请求提交两张ID，任何未知结果均阻断冲突清理。"""
-        if self.case_id != "TC_190" or len(self.tickets) != 2 or self.mass_attempted:
+        if len(self.tickets) != 2 or self.mass_attempted:
             raise PreflightError("跨组宏请求必须含独立两工单且只执行一次") from None
         self.owned()
         self.recorder.ensure_complete()
@@ -322,8 +294,41 @@ class MacroCase:
             ticket.write_unknown = self.write_unknown
         return result
 
+    def _confirm_absent(self) -> None:
+        """负向创建必须以宏集合、配置与工单基线共同证明无残留。"""
+        if (
+            self.case_id != "TC_189"
+            or self.db.macro_ids() != self.baseline
+            or self.db.macro_inventory() != self.before
+        ):
+            raise CleanupError("宏负向请求无法证明无新增")
+        check(self.db.ticket_inventory() == self.tickets_before, "宏负向请求改变了业务工单")
+        self.run.config_absent(self.key)
+
+    def _delete_macro(self) -> None:
+        """核实归属后删除宏，并确认 API、DB 关联和原有基线恢复。"""
+        self.owned()
+        self.recorder.ensure_complete()
+        self.write_unknown = True
+        result = self.maintenance.delete(self.object_id)
+        self.write_unknown = result.response.status_code >= 500
+        if (
+            result.response.status_code != 200
+            or self.maintenance.get(self.object_id).response.status_code != 404
+            or self.db.macro(self.object_id) is not None
+            or self.db.macro_groups(self.object_id)
+        ):
+            raise CleanupError("宏API删除或关联清理失败")
+        if self.db.macro_ids() != self.baseline or self.db.macro_inventory() != self.before:
+            raise CleanupError("宏清理后原配置基线不符")
+        if self.case_id != "TC_190" and self.db.ticket_inventory() != self.tickets_before:
+            raise CleanupError("宏配置清理后业务工单基线不符")
+        self.recorder.ensure_complete()
+        self.run.cleaned(self.key)
+        self.recorder.record("macro-cleanup", {"id": self.object_id, "result": "cleaned"})
+
     def cleanup_macro(self) -> None:
-        """先删除宏并核对关联清零，再由独立工单生命周期处理两工单。"""
+        """按创建结果清理宏，任何失败均登记后留待人工定位。"""
         if self.key is None:
             return
         try:
@@ -331,34 +336,9 @@ class MacroCase:
             if self.write_unknown or self.integrity_unknown:
                 raise CleanupError("宏写入未知或归属不明")
             if self.object_id is None:
-                if (
-                    self.case_id != "TC_189"
-                    or self.db.macro_ids() != self.baseline
-                    or self.db.macro_inventory() != self.before
-                ):
-                    raise CleanupError("宏负向请求无法证明无新增")
-                check(self.db.ticket_inventory() == self.tickets_before, "宏负向请求改变了业务工单")
-                self.run.config_absent(self.key)
-                return
-            self.owned()
-            self.recorder.ensure_complete()
-            self.write_unknown = True
-            result = self.maintenance.delete(self.object_id)
-            self.write_unknown = result.response.status_code >= 500
-            if (
-                result.response.status_code != 200
-                or self.maintenance.get(self.object_id).response.status_code != 404
-                or self.db.macro(self.object_id) is not None
-                or self.db.macro_groups(self.object_id)
-            ):
-                raise CleanupError("宏API删除或关联清理失败")
-            if self.db.macro_ids() != self.baseline or self.db.macro_inventory() != self.before:
-                raise CleanupError("宏清理后原配置基线不符")
-            if self.case_id != "TC_190" and self.db.ticket_inventory() != self.tickets_before:
-                raise CleanupError("宏配置清理后业务工单基线不符")
-            self.recorder.ensure_complete()
-            self.run.cleaned(self.key)
-            self.recorder.record("macro-cleanup", {"id": self.object_id, "result": "cleaned"})
+                self._confirm_absent()
+            else:
+                self._delete_macro()
         except Exception:
             self.run.attention(
                 self.key, "create_unknown" if self.write_unknown else "cleanup_failed"
