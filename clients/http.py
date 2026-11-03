@@ -92,22 +92,26 @@ class HttpClient:
         json: object = _MISSING,
         headers: dict[str, str] | None = None,
     ) -> HttpResult:
-        """即时取证后发送一次请求，返回未经改写的完整响应。"""
+        """按准备参数、请求取证、单次发送和响应取证的顺序执行。"""
         __tracebackhide__ = True  # 请求参数可能含密码，详细证据统一使用脱敏副本。
         if self._closed:
             raise HttpError("客户端已关闭") from None
         method = method.upper()
         url = _url(self.settings, path)
+        options = self._options(params, json, headers)
+        self._record_request(method, url, options, json)
+        result = self._send(method, url, options)
+        self._record_response(result)
+        return result
+
+    def _options(
+        self, params: object, json: object, headers: dict[str, str] | None
+    ) -> dict[str, object]:
+        """组装身份、超时和请求体，保留省略正文与 JSON null 的区别。"""
+        __tracebackhide__ = True
         request_headers = _headers(headers)
         if self._authorization is not None:
             request_headers["Authorization"] = self._authorization
-        request_data = {
-            "identity": self.identity.alias,
-            "method": method,
-            "url": url,
-            "params": params,
-            "headers": request_headers,
-        }
         options = {
             "params": params,
             "headers": request_headers,
@@ -115,14 +119,33 @@ class HttpClient:
             "allow_redirects": False,
         }
         if json is not _MISSING:
-            request_data["json"] = json
             if json is None:
                 # Requests 的 json=None 不发送正文，需要显式发送 JSON null。
                 options["data"] = "null"
                 request_headers.setdefault("Content-Type", "application/json")
             else:
                 options["json"] = json
-        self.recorder.record("request", request_data)
+        return options
+
+    def _record_request(
+        self, method: str, url: str, options: dict[str, object], json: object
+    ) -> None:
+        """从发送参数生成请求证据，由取证器统一脱敏。"""
+        __tracebackhide__ = True
+        data = {
+            "identity": self.identity.alias,
+            "method": method,
+            "url": url,
+            "params": options["params"],
+            "headers": options["headers"],
+        }
+        if json is not _MISSING:
+            data["json"] = json
+        self.recorder.record("request", data)
+
+    def _send(self, method: str, url: str, options: dict[str, object]) -> HttpResult:
+        """单次发送并统计耗时，转换安全异常并清理响应 Cookie。"""
+        __tracebackhide__ = True
         started = perf_counter()
         try:
             response = self.session.request(method, url, **options)
@@ -136,22 +159,26 @@ class HttpClient:
             # 响应可能设置 Cookie，请求结束后清空，避免影响后续身份。
             self.session.cookies.clear()
         elapsed = perf_counter() - started
+        return HttpResult(response, elapsed, len(response.content))
+
+    def _record_response(self, result: HttpResult) -> None:
+        """记录响应正文或二进制摘要，以及发送时统计的耗时和大小。"""
+        __tracebackhide__ = True
+        response = result.response
         try:
             body = response.json()
         except ValueError:
             body = content_summary(response.content)
-        size = len(response.content)
         self.recorder.record(
             "response",
             {
                 "status": response.status_code,
                 "headers": dict(response.headers),
                 "body": body,
-                "elapsed": elapsed,
-                "size": size,
+                "elapsed": result.elapsed,
+                "size": result.size,
             },
         )
-        return HttpResult(response, elapsed, size)
 
     def close(self) -> None:
         """关闭拥有的会话；重复关闭安全。"""
