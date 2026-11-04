@@ -92,7 +92,6 @@ test-Zammad/
 ├── assets/                 # README 展示图片
 ├── config/                 # 配置示例，本地环境配置由 Git 忽略
 ├── docs/                   # 仓库保留的原始测试用例文件
-├── artifacts/              # 本地执行产物，由 Git 忽略
 ├── conftest.py             # pytest 插件注册
 ├── pyproject.toml          # pytest 与 Ruff 配置
 ├── requirements.txt        # 固定版本的 Python 依赖
