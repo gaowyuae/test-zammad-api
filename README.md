@@ -44,13 +44,9 @@ Python 依赖版本固定在 [requirements.txt](requirements.txt)，pytest 和 R
 
 ![Jenkins 构建 #8 的 Allure 报告：73 条用例，72 条通过、1 条失败](assets/allure-report.png)
 
-### 失败用例分析：TC_037 标题长度边界
+### 失败用例：TC_037 标题长度边界
 
-下图为同一次 Jenkins **#8** 构建中的 TC_037 失败详情。用例提交 **251 个字符**的标题，预期返回标题长度校验错误（4xx）并拒绝创建；实际接口返回 **201**，创建的标题被截断为 **250 个字符**，因此触发“未按标题校验拒绝创建”的断言失败。后续 API 回读确认标题长度为 250，收尾时已清理本次创建的工单和文章。
-
-核对部署的 Zammad `7.2.0-0011` 源码后，确认其[长度处理逻辑](https://github.com/zammad/zammad/blob/7.2.0/app/models/application_model/checks_attribute_values_and_length.rb#L39)会在保存前截断超长字符串。该结果反映用例预期与该版本实现的差异；截图中的 `Product defects` 分类不等于已确认的产品缺陷，验收预期仍需结合业务需求确定。
-
-![Jenkins 构建 #8 的 TC_037 失败详情：251 字符标题预期被拒绝，实际返回 201 并截断为 250 字符](assets/allure-tc037-failure.png)
+![失败用例：TC_037 标题长度边界](assets/allure-tc037-failure.png)
 
 ### 代表性用例：跨组批量操作原子性
 
