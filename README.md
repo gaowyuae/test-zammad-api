@@ -38,7 +38,7 @@ Python 依赖版本固定在 [requirements.txt](requirements.txt)，pytest 和 R
 
 详细 TC 编号和断言见 [功能用例源码](tests/functional/)，输入与预期见 [场景数据](data/cases/)。[原始测试用例 Excel](docs/Zammad_工单创建测试用例.xlsx) 用于需求追溯，运行时由 YAML 场景数据驱动。
 
-`pilot` 包含其中 5 条 P0 试点用例，属于上述 73 条的子集。另有 [离线框架检查](tests/framework/)，用于验证数据库封装和 fixture 插件，不计入业务用例数量。性能和并发专项尚未实现。
+`pilot` 包含其中 5 条 P0 试点用例，属于上述 73 条的子集。另有 [离线框架检查](tests/framework/)，用于验证数据库封装和 fixture 插件。
 
 ### 执行结果展示
 
